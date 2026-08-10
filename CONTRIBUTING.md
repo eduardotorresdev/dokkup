@@ -39,6 +39,7 @@ Useful targets:
 | `make test` | Go tests against the in-memory Dokku fake — no container needed |
 | `make test-integration` | Tests against the real Dokku in the dev environment |
 | `make lint` | `golangci-lint`, `svelte-check`, `gofmt` |
+| `make tools` | Install the pinned `golangci-lint`, which `make lint` skips if absent |
 | `make devenv-shell` | A shell inside the dev environment |
 | `make devenv-down` | Stop and remove it |
 

@@ -66,9 +66,14 @@ jobs:
 
       - run: go vet ./...
 
-      - uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
+      # Built from source rather than taken from the action: the published
+      # binaries are compiled with an older Go than this module targets, and
+      # refuse to load the config when that happens. The version is pinned in
+      # the Makefile so local runs and CI cannot drift apart.
+      - name: golangci-lint
+        run: |
+          make tools
+          "$(go env GOPATH)/bin/golangci-lint" run ./...
 
       - run: go test -race -shuffle=on -coverprofile=coverage.out ./...
 

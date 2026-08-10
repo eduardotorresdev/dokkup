@@ -14,6 +14,12 @@ DIST        := dist
 WEB         := web
 WEB_OUT     := internal/server/static/dist
 
+# Built from source with this repository's Go toolchain on purpose: the
+# published golangci-lint binaries are compiled with an older Go than the one
+# this module targets, and refuse to load the config when that happens.
+GOLANGCI_VERSION := v2.12.2
+GOLANGCI_PKG     := github.com/golangci/golangci-lint/v2/cmd/golangci-lint
+
 DEVENV_IMAGE := dokkup-devenv:local
 DEVENV_NAME  := dokkup-devenv
 DEVENV_DIR   := devenv
@@ -99,8 +105,12 @@ lint: ## Lint Go and the frontend
 	go vet ./...
 	@command -v golangci-lint >/dev/null 2>&1 \
 		&& golangci-lint run \
-		|| echo "golangci-lint not installed, skipping"
+		|| echo "golangci-lint not installed, skipping -- run 'make tools' to get it"
 	cd $(WEB) && bun install && bun run check
+
+.PHONY: tools
+tools: ## Install the pinned golangci-lint into $$(go env GOPATH)/bin
+	go install $(GOLANGCI_PKG)@$(GOLANGCI_VERSION)
 
 .PHONY: test
 test: ## Go tests against the in-memory Dokku fake -- no container needed

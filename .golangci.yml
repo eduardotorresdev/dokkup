@@ -40,6 +40,9 @@ linters:
         linters:
           - gosec
           - unparam
+          # Test bodies are closed by the get helper through t.Cleanup, which
+          # bodyclose cannot follow across a function boundary.
+          - bodyclose
 
 formatters:
   enable:

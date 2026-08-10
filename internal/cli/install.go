@@ -23,36 +23,36 @@ func runInstall(env Env, args []string) error {
 // anything happens, and it names the same locations the uninstaller reads from
 // hostpaths, so the two cannot drift apart.
 func printInstallPlan(env Env, domain string) {
-	fmt.Fprintf(env.Stdout, "dokkup install will:\n\n")
+	printf(env.Stdout, "dokkup install will:\n\n")
 
-	fmt.Fprintf(env.Stdout, "  Create the system user %q in the %q group, with a sudoers rule\n",
+	printf(env.Stdout, "  Create the system user %q in the %q group, with a sudoers rule\n",
 		hostpaths.User, hostpaths.DokkuGroup)
-	fmt.Fprintf(env.Stdout, "  permitting exactly one program without a password: the dokku binary.\n\n")
+	printf(env.Stdout, "  permitting exactly one program without a password: the dokku binary.\n\n")
 
-	fmt.Fprintf(env.Stdout, "  Write:\n")
+	printf(env.Stdout, "  Write:\n")
 	for _, path := range hostpaths.Owned() {
-		fmt.Fprintf(env.Stdout, "    %s\n", path)
+		printf(env.Stdout, "    %s\n", path)
 	}
-	fmt.Fprintln(env.Stdout)
+	printf(env.Stdout, "\n")
 
-	fmt.Fprintf(env.Stdout, "  Ensure the Let's Encrypt plugin is present on this host, if it is not\n")
-	fmt.Fprintf(env.Stdout, "  already. Removal will leave it in place: other apps depend on it for\n")
-	fmt.Fprintf(env.Stdout, "  certificate renewal.\n\n")
+	printf(env.Stdout, "  Ensure the Let's Encrypt plugin is present on this host, if it is not\n")
+	printf(env.Stdout, "  already. Removal will leave it in place: other apps depend on it for\n")
+	printf(env.Stdout, "  certificate renewal.\n\n")
 
 	if domain != "" {
-		fmt.Fprintf(env.Stdout, "  Check that %s resolves to this host, then publish dokkup there with a\n", domain)
-		fmt.Fprintf(env.Stdout, "  certificate. If DNS does not point here yet, you will be asked whether\n")
-		fmt.Fprintf(env.Stdout, "  to continue by IP address instead.\n\n")
+		printf(env.Stdout, "  Check that %s resolves to this host, then publish dokkup there with a\n", domain)
+		printf(env.Stdout, "  certificate. If DNS does not point here yet, you will be asked whether\n")
+		printf(env.Stdout, "  to continue by IP address instead.\n\n")
 	} else {
-		fmt.Fprintf(env.Stdout, "  Serve dokkup at this host's IP address. No certificate authority will\n")
-		fmt.Fprintf(env.Stdout, "  vouch for an IP, so you will be offered a self-signed certificate and\n")
-		fmt.Fprintf(env.Stdout, "  shown its fingerprint to check in the browser. In this mode dokkup\n")
-		fmt.Fprintf(env.Stdout, "  allows only the owner and warns on every screen. Leave it later with\n")
-		fmt.Fprintf(env.Stdout, "  'dokkup publish <domain>'.\n\n")
+		printf(env.Stdout, "  Serve dokkup at this host's IP address. No certificate authority will\n")
+		printf(env.Stdout, "  vouch for an IP, so you will be offered a self-signed certificate and\n")
+		printf(env.Stdout, "  shown its fingerprint to check in the browser. In this mode dokkup\n")
+		printf(env.Stdout, "  allows only the owner and warns on every screen. Leave it later with\n")
+		printf(env.Stdout, "  'dokkup publish <domain>'.\n\n")
 	}
 
-	fmt.Fprintf(env.Stdout, "  Print a single-use token, valid briefly, for creating the owner account\n")
-	fmt.Fprintf(env.Stdout, "  in the browser. It is revoked the moment it is used.\n\n")
+	printf(env.Stdout, "  Print a single-use token, valid briefly, for creating the owner account\n")
+	printf(env.Stdout, "  in the browser. It is revoked the moment it is used.\n\n")
 }
 
 func runPublish(env Env, args []string) error {
@@ -65,8 +65,8 @@ func runPublish(env Env, args []string) error {
 	}
 
 	domain := fs.Arg(0)
-	fmt.Fprintf(env.Stdout, "dokkup publish will check that %s resolves to this host, serve dokkup\n", domain)
-	fmt.Fprintf(env.Stdout, "there with a certificate, and leave IP mode.\n\n")
+	printf(env.Stdout, "dokkup publish will check that %s resolves to this host, serve dokkup\n", domain)
+	printf(env.Stdout, "there with a certificate, and leave IP mode.\n\n")
 
 	return fmt.Errorf("%w: publishing is not built yet", ErrNotImplemented)
 }
@@ -77,9 +77,9 @@ func runSetupToken(env Env, args []string) error {
 		return err
 	}
 
-	fmt.Fprintf(env.Stdout, "dokkup setup-token issues a single-use token for creating the owner.\n")
-	fmt.Fprintf(env.Stdout, "It refuses once an owner exists: without that condition it would be an\n")
-	fmt.Fprintf(env.Stdout, "unauthenticated route to taking over the account.\n\n")
+	printf(env.Stdout, "dokkup setup-token issues a single-use token for creating the owner.\n")
+	printf(env.Stdout, "It refuses once an owner exists: without that condition it would be an\n")
+	printf(env.Stdout, "unauthenticated route to taking over the account.\n\n")
 
 	return fmt.Errorf("%w: token issuance is not built yet", ErrNotImplemented)
 }

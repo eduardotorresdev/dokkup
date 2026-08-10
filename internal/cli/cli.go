@@ -61,12 +61,13 @@ func Run(env Env, args []string) int {
 	case "setup-token":
 		err = runSetupToken(env, rest)
 	case "version", "--version", "-v":
-		err = runVersion(env)
+		runVersion(env)
+		return 0
 	case "help", "--help", "-h":
 		usage(env.Stdout)
 		return 0
 	default:
-		fmt.Fprintf(env.Stderr, "dokkup: unknown command %q\n\n", name)
+		printf(env.Stderr, "dokkup: unknown command %q\n\n", name)
 		usage(env.Stderr)
 		return 2
 	}
@@ -74,19 +75,19 @@ func Run(env Env, args []string) int {
 	switch {
 	case err == nil:
 		return 0
-	case errors.Is(err, flagHelp):
+	case errors.Is(err, errFlagHelp):
 		return 0
 	case errors.Is(err, ErrNotImplemented):
-		fmt.Fprintf(env.Stderr, "dokkup %s: %v\n", name, err)
+		printf(env.Stderr, "dokkup %s: %v\n", name, err)
 		return 3
 	default:
-		fmt.Fprintf(env.Stderr, "dokkup %s: %v\n", name, err)
+		printf(env.Stderr, "dokkup %s: %v\n", name, err)
 		return 1
 	}
 }
 
 func usage(w io.Writer) {
-	fmt.Fprint(w, `dokkup -- a web interface for a Dokku host
+	printf(w, `dokkup -- a web interface for a Dokku host
 
 Usage:
   dokkup <command> [flags]
@@ -103,8 +104,14 @@ Run 'dokkup <command> --help' for the flags of a command.
 `)
 }
 
-func runVersion(env Env) error {
-	fmt.Fprintf(env.Stdout, "dokkup %s (commit %s, built %s)\n",
+func runVersion(env Env) {
+	printf(env.Stdout, "dokkup %s (commit %s, built %s)\n",
 		env.Build.Version, env.Build.Commit, env.Build.Date)
-	return nil
+}
+
+// printf writes to one of the CLI's own output streams. A failure to write to
+// the terminal cannot be reported anywhere the operator would see it, so the
+// error is dropped here, once, instead of at every call site.
+func printf(w io.Writer, format string, a ...any) {
+	_, _ = fmt.Fprintf(w, format, a...)
 }

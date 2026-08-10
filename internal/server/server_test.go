@@ -82,11 +82,7 @@ func TestEveryResponseCarriesTheSecurityHeaders(t *testing.T) {
 
 	srv := newTestServer(t, server.Config{Dokku: dokku.NewFake()})
 
-	resp, err := http.Get(srv.URL + "/api/health")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
-	defer resp.Body.Close()
+	resp := get(t, srv.URL+"/api/health")
 
 	want := map[string]string{
 		"X-Content-Type-Options": "nosniff",
@@ -103,14 +99,27 @@ func TestEveryResponseCarriesTheSecurityHeaders(t *testing.T) {
 	}
 }
 
-func getJSON(t *testing.T, url string, wantStatus int) map[string]any {
+// get performs a GET bound to the test's context, so a hung server fails the
+// test rather than the whole run, and closes the body when the test ends.
+func get(t *testing.T, url string) *http.Response {
 	t.Helper()
 
-	resp, err := http.Get(url)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("building GET %s: %v", url, err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET %s: %v", url, err)
 	}
-	defer resp.Body.Close()
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+func getJSON(t *testing.T, url string, wantStatus int) map[string]any {
+	t.Helper()
+
+	resp := get(t, url)
 
 	if resp.StatusCode != wantStatus {
 		t.Fatalf("GET %s status = %d, want %d", url, resp.StatusCode, wantStatus)

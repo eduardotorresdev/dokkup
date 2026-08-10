@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os/signal"
@@ -15,9 +14,9 @@ import (
 	"github.com/eduardotorresdev/dokkup/internal/server"
 )
 
-// flagHelp is returned when a command was asked for its own usage, so that Run
+// errFlagHelp is returned when a command was asked for its own usage, so that Run
 // can exit zero rather than treating it as a failure.
-var flagHelp = errors.New("help requested")
+var errFlagHelp = errors.New("help requested")
 
 func newFlagSet(env Env, name string) *flag.FlagSet {
 	fs := flag.NewFlagSet("dokkup "+name, flag.ContinueOnError)
@@ -28,7 +27,7 @@ func newFlagSet(env Env, name string) *flag.FlagSet {
 func parseFlags(fs *flag.FlagSet, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			return flagHelp
+			return errFlagHelp
 		}
 		return err
 	}
@@ -66,7 +65,7 @@ func runServe(env Env, args []string) error {
 	errc := make(chan error, 1)
 	go func() {
 		logger.Info("dokkup listening", "address", *listen, "mode", *mode)
-		fmt.Fprintf(env.Stdout, "dokkup listening on http://%s\n", *listen)
+		printf(env.Stdout, "dokkup listening on http://%s\n", *listen)
 		errc <- httpServer.ListenAndServe()
 	}()
 
