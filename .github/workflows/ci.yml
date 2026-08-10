@@ -92,18 +92,37 @@ jobs:
       - name: Build the dev environment image
         run: docker build -t dokkup-devenv:ci devenv
 
+      # Apple's runtime gives each container its own lightweight VM, so there
+      # `--cap-add ALL` is enough for systemd and for the Docker daemon Dokku
+      # needs. Docker shares the host kernel, so the same image only boots here
+      # with a writable cgroup hierarchy, tmpfs for /run, and --privileged.
       - name: Boot it and install Dokku
         run: |
-          docker run -d --cap-add ALL --name dokkup-devenv dokkup-devenv:ci
+          docker run -d --name dokkup-devenv \
+            --privileged \
+            --cgroupns=host \
+            -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            --tmpfs /run \
+            --tmpfs /run/lock \
+            dokkup-devenv:ci
+
           for _ in $(seq 1 180); do
             if docker exec dokkup-devenv dokku apps:list >/dev/null 2>&1; then
               echo "Dokku ready: $(docker exec dokkup-devenv dokku version)"
               exit 0
             fi
+            if [ "$(docker inspect -f '{{.State.Running}}' dokkup-devenv)" != true ]; then
+              echo "the container stopped on its own" >&2
+              break
+            fi
             sleep 5
           done
+
           echo "Dokku did not become ready" >&2
-          docker exec dokkup-devenv journalctl -u dokku-bootstrap --no-pager | tail -50 || true
+          docker inspect -f 'state: {{.State.Status}} exit: {{.State.ExitCode}}' dokkup-devenv || true
+          docker logs --tail 50 dokkup-devenv || true
+          docker exec dokkup-devenv systemctl --failed --no-pager || true
+          docker exec dokkup-devenv journalctl -u dokku-bootstrap --no-pager 2>&1 | tail -50 || true
           exit 1
 
       - name: Check for failed units

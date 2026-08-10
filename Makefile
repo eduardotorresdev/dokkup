@@ -28,6 +28,16 @@ DEVENV_DIR   := devenv
 # virtual machine of its own and starts noticeably faster.
 RUNTIME ?= $(shell command -v container 2>/dev/null || command -v docker 2>/dev/null)
 
+# Apple's runtime gives each container its own lightweight VM, where `--cap-add
+# ALL` is enough for systemd and for the Docker daemon Dokku needs. Docker
+# shares a kernel, so the same image only boots with a writable cgroup
+# hierarchy, tmpfs for /run, and --privileged.
+DEVENV_RUN_FLAGS := $(if $(filter docker,$(notdir $(RUNTIME))),\
+                      --privileged --cgroupns=host \
+                      -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+                      --tmpfs /run --tmpfs /run/lock,\
+                      --cap-add ALL)
+
 VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 DATE      ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -133,7 +143,7 @@ devenv-up: devenv-build ## Start a real Dokku locally (first run installs it, ta
 		echo "$(DEVENV_NAME) already exists; starting it"; \
 		$(RUNTIME) start $(DEVENV_NAME) >/dev/null 2>&1 || true; \
 	else \
-		$(RUNTIME) run -d --cap-add ALL --name $(DEVENV_NAME) \
+		$(RUNTIME) run -d $(DEVENV_RUN_FLAGS) --name $(DEVENV_NAME) \
 			-p 2222:22 -p 8081:80 -p 8443:443 \
 			-v "$(CURDIR)":/workspace \
 			$(DEVENV_IMAGE); \

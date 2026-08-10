@@ -22,6 +22,11 @@ Verified on Apple container 1.0.0, macOS 26.5, Apple Silicon:
 
 Only `--cap-add ALL` is required; there is no privileged flag and none is needed.
 
+Under Docker the same image needs more, because Docker shares the host kernel
+instead of booting one: `--privileged`, `--cgroupns=host`, a writable
+`/sys/fs/cgroup` and tmpfs for `/run`. The Makefile chooses the flags from the
+runtime it finds, so the difference is not something anyone has to remember.
+
 ## Consequences
 
 The installer is exercised for real. It writes a systemd unit, a sudoers rule and
