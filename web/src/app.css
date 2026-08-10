@@ -1,0 +1,62 @@
+/*
+ * Colours are defined once on :root and overridden for dark, so no value has its
+ * only definition inside a media query.
+ */
+:root {
+  --bg: #ffffff;
+  --fg: #16181d;
+  --muted: #6b7280;
+  --border: #e5e7eb;
+  --ok: #15803d;
+  --bad: #b91c1c;
+  --warn-bg: #fef3c7;
+  --warn-fg: #78350f;
+  --warn-border: #fcd34d;
+
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1115;
+    --fg: #e7e9ee;
+    --muted: #9aa1ad;
+    --border: #262a33;
+    --ok: #4ade80;
+    --bad: #f87171;
+    --warn-bg: #422006;
+    --warn-fg: #fde68a;
+    --warn-border: #854d0e;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.9em;
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+
+a {
+  color: inherit;
+}
