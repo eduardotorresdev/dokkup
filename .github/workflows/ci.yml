@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+        working-directory: web
+
+      - run: bun run check
+        working-directory: web
+
+      - run: bun run build
+        working-directory: web
+
+      # The Go build embeds this, so every later job gets the same bytes rather
+      # than rebuilding and hoping they match.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend
+          path: internal/server/static/dist
+          retention-days: 1
+
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+    needs: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend
+          path: internal/server/static/dist
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -s -l $(git ls-files '*.go'))
+          if [ -n "$unformatted" ]; then
+            echo "these files need 'make fmt':"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - run: go vet ./...
+
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+      - run: go test -race -shuffle=on -coverprofile=coverage.out ./...
+
+      - name: Build and check the weight budget
+        run: make budget
+
+  devenv:
+    name: Development environment
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same image definition developers use on macOS under Apple's
+      # container runtime. If it stops building here, it has stopped working
+      # there too.
+      - name: Build the dev environment image
+        run: docker build -t dokkup-devenv:ci devenv
+
+      - name: Boot it and install Dokku
+        run: |
+          docker run -d --cap-add ALL --name dokkup-devenv dokkup-devenv:ci
+          for _ in $(seq 1 180); do
+            if docker exec dokkup-devenv dokku apps:list >/dev/null 2>&1; then
+              echo "Dokku ready: $(docker exec dokkup-devenv dokku version)"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Dokku did not become ready" >&2
+          docker exec dokkup-devenv journalctl -u dokku-bootstrap --no-pager | tail -50 || true
+          exit 1
+
+      - name: Check for failed units
+        run: docker exec dokkup-devenv systemctl --failed --no-pager
+
+      - if: always()
+        run: docker rm -f dokkup-devenv || true
+
+  scripts:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck install.sh devenv/bootstrap-dokku.sh

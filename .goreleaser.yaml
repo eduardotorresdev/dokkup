@@ -1,0 +1,84 @@
+version: 2
+
+project_name: dokkup
+
+before:
+  hooks:
+    # The frontend is built by the workflow before this runs; fail loudly rather
+    # than shipping a binary with an empty interface embedded in it.
+    - sh -c 'test -f internal/server/static/dist/index.html || { echo "frontend not built: run make web" >&2; exit 1; }'
+    - go mod tidy
+
+builds:
+  - id: dokkup
+    main: ./cmd/dokkup
+    binary: dokkup
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .FullCommit }}
+      - -X main.date={{ .CommitDate }}
+    mod_timestamp: '{{ .CommitTimestamp }}'
+
+archives:
+  # Distributed as bare binaries, not tarballs: installation is meant to be
+  # download one file, check it, run it.
+  - formats: [binary]
+    name_template: '{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}'
+
+checksum:
+  name_template: SHA256SUMS
+  algorithm: sha256
+
+signs:
+  - cmd: cosign
+    signature: '${artifact}.cosign.bundle'
+    args:
+      - sign-blob
+      - '--yes'
+      - '--bundle=${signature}'
+      - '${artifact}'
+    artifacts: all
+    output: true
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: '^feat(\(.+\))?!?:'
+      order: 0
+    - title: Fixes
+      regexp: '^fix(\(.+\))?!?:'
+      order: 1
+    - title: Documentation
+      regexp: '^docs(\(.+\))?:'
+      order: 2
+    - title: Other
+      order: 99
+  filters:
+    exclude:
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+
+release:
+  draft: false
+  prerelease: auto
+  footer: |
+    ## Verifying
+
+    ```sh
+    sha256sum --check --ignore-missing SHA256SUMS
+
+    cosign verify-blob dokkup_linux_amd64 \
+      --bundle dokkup_linux_amd64.cosign.bundle \
+      --certificate-identity-regexp 'https://github\.com/eduardotorresdev/dokkup/' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com
+    ```

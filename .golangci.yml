@@ -1,0 +1,47 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - copyloopvar
+    - errorlint
+    - gosec
+    - misspell
+    - nilerr
+    - noctx
+    - revive
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - wastedassign
+
+  settings:
+    gosec:
+      excludes:
+        # G204 flags every exec.Command with a variable argument. Invoking Dokku
+        # is what dokkup does; what makes it safe is that commands are built as
+        # argument vectors with no shell and app names are validated first, which
+        # this linter cannot see. Reviewers must keep checking that -- see
+        # CONTRIBUTING.md.
+        - G204
+
+    revive:
+      rules:
+        - name: exported
+          disabled: false
+
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - unparam
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

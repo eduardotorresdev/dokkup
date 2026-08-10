@@ -1,0 +1,34 @@
+name: Feature request
+description: Suggest something dokkup should do
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Some things are deliberately out of scope — databases and other Dokku
+        services, writing to your applications' repositories, mounting arbitrary
+        host paths, per-app permissions, and managing more than one host. The
+        reasoning is in the README and in [docs/adr](https://github.com/eduardotorresdev/dokkup/tree/main/docs/adr).
+        If your request is one of those, say why the reasoning does not hold for
+        your case; that is a more useful conversation than the request alone.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do today, and what makes it awkward?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like dokkup to do
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What you do instead today
+      description: Which `dokku` commands does this replace?

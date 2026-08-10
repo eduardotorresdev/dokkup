@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  # Required for keyless signing: the workflow's OIDC token is the identity a
+  # signature is bound to, which is what lets anyone verify that a binary was
+  # built by this repository rather than by someone claiming to be it.
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: Build the frontend
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+        working-directory: web
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
