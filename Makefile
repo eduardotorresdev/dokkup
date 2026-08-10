@@ -64,7 +64,12 @@ web: ## Build the frontend
 	cd $(WEB) && bun install --frozen-lockfile && bun run build
 
 .PHONY: build
-build: web ## Build the binary with the frontend embedded
+build: web build-go ## Build the frontend, then the binary with it embedded
+
+# Kept separate so CI can compile against the frontend it built once and passed
+# between jobs, instead of building it again and hoping the bytes match.
+.PHONY: build-go
+build-go: ## Build the binary from the frontend already in $(WEB_OUT)
 	mkdir -p $(DIST)
 	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o $(DIST)/$(BINARY) $(CMD_PKG)
 	@echo "built $(DIST)/$(BINARY) ($(VERSION))"
@@ -76,7 +81,8 @@ build-linux: web ## Cross-compile for Linux amd64 and arm64
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags '$(LDFLAGS)' -o $(DIST)/$(BINARY)_linux_arm64 $(CMD_PKG)
 
 .PHONY: budget
-budget: build ## Fail if the binary exceeds its size budget
+budget: ## Fail if the built binary exceeds its size budget
+	@test -f $(DIST)/$(BINARY) || { echo "no $(DIST)/$(BINARY) yet -- run 'make build'" >&2; exit 1; }
 	@size=$$(( $$(wc -c < $(DIST)/$(BINARY)) / 1024 / 1024 )); \
 	echo "binary: $${size} MB (budget $(MAX_BINARY_MB) MB)"; \
 	if [ "$${size}" -gt "$(MAX_BINARY_MB)" ]; then \
