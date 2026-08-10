@@ -1,0 +1,10 @@
+dokkup
+Copyright 2026 The dokkup Authors
+
+This product includes software developed by the dokkup Authors, licensed under
+the Apache License, Version 2.0.
+
+dokkup manages installations of Dokku (https://dokku.com), which is a separate
+work distributed under the MIT License. dokkup is not affiliated with, endorsed
+by, or sponsored by the Dokku project. "Dokku" is used here only to describe what
+this software interoperates with.
