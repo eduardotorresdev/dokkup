@@ -16,7 +16,7 @@
 # first `make devenv-up` therefore takes several minutes; later ones do not,
 # because the container is kept rather than recreated.
 
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 ARG DOKKU_VERSION=v0.38.7
 ARG DOKKU_HOSTNAME=dokku.me
