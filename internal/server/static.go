@@ -9,12 +9,17 @@ import (
 
 // staticFiles holds the built frontend.
 //
-// The contents are produced by `make web` and are not checked in; only a
-// placeholder is, so that `go build` and `go vet` work in a fresh clone without
-// building the frontend first. A binary built that way serves no interface --
-// use `make build`, which does both in order.
+// The contents are produced by `make web` and are not checked in; only the
+// placeholder beside them is, so that `go build` and `go vet` work in a fresh
+// clone without building the frontend first. A binary built that way serves no
+// interface -- use `make build`, which does both in order.
 //
-//go:embed all:static/dist
+// The pattern covers `static` rather than `static/dist` because the frontend
+// build empties its own output directory: a placeholder inside it would be
+// deleted by every build, and an embed pattern that matches nothing is a
+// compile error rather than a missing interface.
+//
+//go:embed all:static
 var staticFiles embed.FS
 
 // staticHandler serves the frontend, falling back to the application shell for
