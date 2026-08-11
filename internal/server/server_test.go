@@ -50,6 +50,38 @@ func TestHealthReportsUnavailableWhenDokkuCannotBeReached(t *testing.T) {
 	}
 }
 
+// `dokkup update` restarts the service and then asks this endpoint who answered.
+// Without the version in the body, a restart that silently kept the old binary
+// replies exactly as happily as one that took the new one, and a failed update
+// reports success.
+func TestHealthReportsWhichDokkupIsRunning(t *testing.T) {
+	t.Parallel()
+
+	srv := newTestServer(t, server.Config{Dokku: dokku.NewFake(), Version: "0.2.0"})
+
+	body := getJSON(t, srv.URL+"/api/health", http.StatusOK)
+
+	if body["dokkup"] != "0.2.0" {
+		t.Errorf("dokkup = %v, want 0.2.0", body["dokkup"])
+	}
+}
+
+// Dokku being unreachable says nothing about which dokkup is running, and that
+// is precisely the case where an operator most needs to know.
+func TestTheVersionIsStillReportedWhenDokkuIsUnreachable(t *testing.T) {
+	t.Parallel()
+
+	fake := dokku.NewFake()
+	fake.Err = io.ErrUnexpectedEOF
+	srv := newTestServer(t, server.Config{Dokku: fake, Version: "0.2.0"})
+
+	body := getJSON(t, srv.URL+"/api/health", http.StatusServiceUnavailable)
+
+	if body["dokkup"] != "0.2.0" {
+		t.Errorf("dokkup = %v, want 0.2.0", body["dokkup"])
+	}
+}
+
 func TestSessionReportsOwnerOnlyInIPMode(t *testing.T) {
 	t.Parallel()
 

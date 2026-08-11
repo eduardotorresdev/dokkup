@@ -11,6 +11,18 @@ const (
 	// Binary is where the dokkup executable is installed.
 	Binary = "/usr/local/bin/dokkup"
 
+	// PreviousSuffix marks the executable an update replaced, kept beside the
+	// new one so that a version which does not come back healthy can be undone
+	// without another download.
+	PreviousSuffix = ".previous"
+
+	// PreviousBinary is where that copy lives.
+	//
+	// It is created by `dokkup update` rather than by installation, which is
+	// why it is not in [Owned]: the install plan must not claim to write a file
+	// installation never writes. Removal has to take it all the same.
+	PreviousBinary = Binary + PreviousSuffix
+
 	// Unit is the systemd service.
 	Unit = "/etc/systemd/system/dokkup.service"
 

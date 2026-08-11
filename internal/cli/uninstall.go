@@ -32,6 +32,10 @@ func PrintRemovalReport(env Env, purge bool) {
 	printf(env.Stdout, "    %s\n", hostpaths.Unit)
 	printf(env.Stdout, "    %s\n", hostpaths.Sudoers)
 	printf(env.Stdout, "    %s\n", hostpaths.Binary)
+	// Installation never writes this one -- `dokkup update` does -- but removal
+	// still has to take it, or a host that was updated keeps an executable
+	// dokkup put there after being told dokkup was gone.
+	printf(env.Stdout, "    %s  (kept by a previous update, if there was one)\n", hostpaths.PreviousBinary)
 	printf(env.Stdout, "    system user and group %q\n", hostpaths.User)
 	printf(env.Stdout, "    the published vhost and its certificate, if dokkup created one\n")
 

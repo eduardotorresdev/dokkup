@@ -56,6 +56,8 @@ func Run(env Env, args []string) int {
 		err = runInstall(env, rest)
 	case "uninstall":
 		err = runUninstall(env, rest)
+	case "update":
+		err = runUpdate(env, rest)
 	case "publish":
 		err = runPublish(env, rest)
 	case "setup-token":
@@ -72,16 +74,31 @@ func Run(env Env, args []string) int {
 		return 2
 	}
 
+	if err != nil && !errors.Is(err, errFlagHelp) {
+		printf(env.Stderr, "dokkup %s: %v\n", name, err)
+	}
+	return exitCode(err)
+}
+
+// exitCode maps a subcommand's error to what the shell sees.
+//
+// The codes are a contract with whatever is calling dokkup unattended, so they
+// live in one function that can be read and tested on its own rather than being
+// spread across the commands that produce them.
+func exitCode(err error) int {
 	switch {
-	case err == nil:
-		return 0
-	case errors.Is(err, errFlagHelp):
+	case err == nil, errors.Is(err, errFlagHelp):
 		return 0
 	case errors.Is(err, ErrNotImplemented):
-		printf(env.Stderr, "dokkup %s: %v\n", name, err)
 		return 3
+	// 4 and 5 are told apart because an unattended caller needs them apart:
+	// "you are fine, on the old version" and "this host may have no working
+	// binary" deserve different pages in the middle of the night.
+	case errors.Is(err, ErrRolledBack):
+		return 4
+	case errors.Is(err, ErrRollbackFailed):
+		return 5
 	default:
-		printf(env.Stderr, "dokkup %s: %v\n", name, err)
 		return 1
 	}
 }
@@ -94,6 +111,7 @@ Usage:
 
 Commands:
   install       Install dokkup on this Dokku host
+  update        Move to a newer version, rolling back if it does not come up
   uninstall     Remove dokkup, reporting exactly what goes and what stays
   publish       Serve dokkup at a domain with a certificate
   setup-token   Issue a token to create the owner, while no owner exists
@@ -101,6 +119,16 @@ Commands:
   version       Print version information
 
 Run 'dokkup <command> --help' for the flags of a command.
+
+Exit codes:
+  0  It worked. 'update --check' also exits 0 when an update is waiting: that
+     is news rather than a failure.
+  1  It did not work.
+  2  The command was used wrongly.
+  3  The command exists but is not built yet.
+  4  'update' installed a version that did not come up, and put the previous
+     one back. The host is serving the version it was serving before.
+  5  'update' could not restore a working service. This host needs attention.
 `)
 }
 

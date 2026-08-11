@@ -65,7 +65,14 @@ func TestUninstallAlwaysReportsBeforeDoingAnything(t *testing.T) {
 	if code == 0 {
 		t.Fatal("uninstall exited 0 while unimplemented; it must not claim success")
 	}
-	for _, want := range []string{hostpaths.Unit, hostpaths.Sudoers, hostpaths.Binary, hostpaths.DataDir} {
+	for _, want := range []string{
+		hostpaths.Unit, hostpaths.Sudoers, hostpaths.Binary, hostpaths.DataDir,
+		// Installation does not write this one, so it is absent from
+		// hostpaths.Owned and easy to forget here. `dokkup update` leaves it
+		// behind, and a host that was ever updated would otherwise keep an
+		// executable dokkup put there after being told dokkup was gone.
+		hostpaths.PreviousBinary,
+	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("removal report does not mention %s", want)
 		}

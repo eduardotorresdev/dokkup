@@ -41,6 +41,14 @@ type Config struct {
 	// Mode decides whether additional operators may be created.
 	Mode Mode
 
+	// Version is the running binary's own version, reported by /api/health.
+	//
+	// It is what makes the endpoint usable as a gate after a restart: without
+	// it, a service that came back on the *old* binary answers exactly as
+	// happily as one that came back on the new one, and `dokkup update` would
+	// call a failed update a success.
+	Version string
+
 	// Logger receives request and error logs.
 	Logger *slog.Logger
 }
@@ -80,14 +88,30 @@ func (s *Server) routes() {
 	s.mux.Handle("/", staticHandler())
 }
 
-// handleHealth reports whether dokkup can reach Dokku. It is deliberately
-// unauthenticated: it exposes no state beyond reachability, and an operator
-// diagnosing a broken install needs it before being able to sign in.
+// HealthDokkuTimeout bounds the one Dokku call the health endpoint makes.
+//
+// It is short on purpose, and it is the shorter half of a pair. The caller that
+// matters most is `dokkup update`, which polls this endpoint to decide whether a
+// newly installed binary came up -- and the answer it needs, the running
+// dokkup's own version, is already in hand before Dokku is asked at all. If a
+// wedged Docker could hold the reply past the updater's patience, the updater
+// would see no answer, conclude the new binary never started, and roll back one
+// that was working perfectly. So this must stay comfortably below the timeout on
+// the probe client in internal/cli/update.go; the two are documented against
+// each other, and a test in that package asserts the gap.
+const HealthDokkuTimeout = 2 * time.Second
+
+// handleHealth reports which dokkup is running and whether it can reach Dokku.
+// It is deliberately unauthenticated: it exposes no state beyond reachability
+// and a version, and an operator diagnosing a broken install needs it before
+// being able to sign in.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), HealthDokkuTimeout)
 	defer cancel()
 
-	body := map[string]any{"status": "ok"}
+	// Reported even when Dokku is unreachable, because that is exactly when an
+	// updater needs to know which binary answered.
+	body := map[string]any{"status": "ok", "dokkup": s.cfg.Version}
 	status := http.StatusOK
 
 	if s.cfg.Dokku != nil {

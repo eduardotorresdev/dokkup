@@ -12,6 +12,7 @@ import (
 
 	"github.com/eduardotorresdev/dokkup/internal/dokku"
 	"github.com/eduardotorresdev/dokkup/internal/server"
+	"github.com/eduardotorresdev/dokkup/internal/service"
 )
 
 // errFlagHelp is returned when a command was asked for its own usage, so that Run
@@ -36,7 +37,7 @@ func parseFlags(fs *flag.FlagSet, args []string) error {
 
 func runServe(env Env, args []string) error {
 	fs := newFlagSet(env, "serve")
-	listen := fs.String("listen", "127.0.0.1:8080", "address to listen on")
+	listen := fs.String("listen", service.DefaultListen, "address to listen on")
 	mode := fs.String("mode", string(server.ModeIP), "reachability mode: published or ip")
 	dokkuBinary := fs.String("dokku-binary", dokku.DefaultBinary, "path to the dokku executable")
 
@@ -47,9 +48,10 @@ func runServe(env Env, args []string) error {
 	logger := slog.Default()
 
 	srv := server.New(server.Config{
-		Dokku:  &dokku.ExecClient{Binary: *dokkuBinary},
-		Mode:   server.Mode(*mode),
-		Logger: logger,
+		Dokku:   &dokku.ExecClient{Binary: *dokkuBinary},
+		Mode:    server.Mode(*mode),
+		Version: env.Build.Version,
+		Logger:  logger,
 	})
 
 	httpServer := &http.Server{
