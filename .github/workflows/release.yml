@@ -30,7 +30,7 @@ jobs:
     name: Release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The version is derived from the commits since the last tag, so the
           # full history and every tag have to be here.
@@ -40,7 +40,7 @@ jobs:
         with:
           bun-version: latest
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26'
           cache: true
@@ -117,7 +117,7 @@ jobs:
       # fire and the release would never be built.
       - name: Build, sign and publish
         if: github.ref_type == 'tag' || steps.prepare.outputs.release == 'true'
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7
         with:
           # Pinned to the major: install.sh depends on goreleaser's archive
           # naming, and a major that renamed it would break every install with

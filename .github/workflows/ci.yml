@@ -17,7 +17,7 @@ jobs:
     name: Frontend
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
@@ -33,7 +33,7 @@ jobs:
 
       # The Go build embeds this, so every later job gets the same bytes rather
       # than rebuilding and hoping they match.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: frontend
           path: internal/server/static/dist
@@ -44,13 +44,13 @@ jobs:
     runs-on: ubuntu-latest
     needs: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26'
           cache: true
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: frontend
           path: internal/server/static/dist
@@ -86,7 +86,7 @@ jobs:
     name: Development environment
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The same image definition developers use on macOS under Apple's
       # container runtime. If it stops building here, it has stopped working
@@ -137,7 +137,7 @@ jobs:
     name: Shell scripts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Every tracked script, rather than a list someone has to remember to add
       # to. install.sh and the release script are both run by people who did not
       # write them, one as root.
