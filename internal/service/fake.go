@@ -13,7 +13,9 @@ import (
 type Fake struct {
 	mu sync.Mutex
 
-	// Active is what IsActive reports. A successful Restart sets it.
+	// Active is what IsActive reports. A successful Restart or Enable sets it,
+	// and a successful Disable clears it, so a test can assert that removal
+	// stopped the service before it removed the user it runs as.
 	Active bool
 
 	// Calls records every invocation in order, so a test can assert that a
@@ -49,6 +51,50 @@ func (f *Fake) ResetFailed(context.Context) error {
 	defer f.mu.Unlock()
 
 	return f.record("reset-failed")
+}
+
+// DaemonReload implements [Manager].
+func (f *Fake) DaemonReload(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.record("daemon-reload")
+}
+
+// Enable implements [Manager].
+func (f *Fake) Enable(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if err := f.record("enable"); err != nil {
+		return err
+	}
+	f.Active = true
+	return nil
+}
+
+// Disable implements [Manager].
+func (f *Fake) Disable(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if err := f.record("disable"); err != nil {
+		return err
+	}
+	f.Active = false
+	return nil
+}
+
+// Reload implements [Manager].
+//
+// The unit is recorded with the call because the one caller reloads nginx
+// rather than dokkup, and a test that could not tell the two apart would not
+// notice a seam that reloaded the wrong service.
+func (f *Fake) Reload(_ context.Context, unit string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.record("reload " + unit)
 }
 
 // IsActive implements [Manager].

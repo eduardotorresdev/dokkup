@@ -5,10 +5,10 @@ system user and group, and the published vhost. It asks before deleting the data
 directory. It never removes Apps, Managed Volumes, networks, Dokku plugins or
 Docker credentials.
 
-The installer ensures the Let's Encrypt plugin is present, and removal
-deliberately leaves it in place: other Apps on the host almost certainly depend on
-it for certificate renewal, and uninstalling a management UI must not silently
-break unrelated applications. Removal is not a way to reset the server.
+Removal leaves Dokku's plugins alone, including a Let's Encrypt plugin the host
+may have: other Apps on the host almost certainly depend on it for certificate
+renewal, and uninstalling a management UI must not silently break unrelated
+applications. Removal is not a way to reset the server.
 
 ## Consequences
 
@@ -20,3 +20,31 @@ host's name exactly when already running as root.
 Dokku plugins are treated as an implementation detail throughout. The interface
 never mentions them, and removal neither deletes them nor instructs the operator
 to.
+
+## Amended: the installer no longer installs the Let's Encrypt plugin
+
+The second paragraph above used to read "The installer ensures the Let's Encrypt
+plugin is present, and removal deliberately leaves it in place". The promise
+about removal is unchanged; the premise has gone, because installation no longer
+puts the plugin there. The sentence is the same promise with a false premise
+removed.
+
+The reason is the amendment to ADR-0006: the plugin issues certificates for
+Apps, and dokkup is not an App, so installing it bought dokkup's own domain
+nothing at all. What it cost was measured in the development environment —
+Ubuntu 24.04, Dokku 0.38.7, linux/arm64: 16 seconds, a `goacme/lego` Docker
+image pulled over the network, a network dependency in the middle of an
+installation that otherwise has none, and one undocumented change to a host
+identity dokkup does not own, which the plugin's own output reports as `Adding
+user dokku to group adm`.
+
+The last of those is the one this ADR cares about. Anything the installer puts
+on a host, removal is then obliged to leave behind for ever, because it cannot
+know what came to depend on it in the meantime. Taking on that obligation
+permanently in exchange for nothing is exactly the trade this decision exists to
+refuse.
+
+So installation says only that this host's Dokku plugins stay as they are,
+including a Let's Encrypt plugin if it has one, and the removal report says the
+same. A host with the plugin keeps it and everything renewing through it; a host
+without one is not given one.

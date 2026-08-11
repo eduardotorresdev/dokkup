@@ -82,6 +82,59 @@ func TestAFailedUnitIsClearedByItsOwnCommandRatherThanByRestarting(t *testing.T)
 	}
 }
 
+// Installing a unit and taking it away again are the four commands below, and
+// each is asserted by the exact vector it sends: on a host, the difference
+// between `enable` and `enable --now` is whether the service is running when
+// installation reports success, and the difference between reloading "nginx"
+// and reloading dokkup's own unit is whether the proxy ever reads the file that
+// was just written.
+func TestInstallingAndRemovingTheUnitSendsExactlyWhatSystemdNeeds(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		call func(ctx context.Context, systemctl *service.Systemctl) error
+		want string
+	}{
+		// daemon-reload takes no unit. `systemctl daemon-reload dokkup.service`
+		// answers "Too many arguments." and exits 1 without reloading anything.
+		"systemd is still holding the unit text that was just replaced": {
+			call: func(ctx context.Context, s *service.Systemctl) error { return s.DaemonReload(ctx) },
+			want: "daemon-reload",
+		},
+		// --now, because an installation that finished with the service not
+		// running would have to be told to start it before it was any use.
+		"installation starts the service and makes it start at boot": {
+			call: func(ctx context.Context, s *service.Systemctl) error { return s.Enable(ctx) },
+			want: "enable --now dokkup.service",
+		},
+		// --now again, and removal cannot skip it: userdel refuses with exit 8
+		// while a process is still running as the user being removed.
+		"removal stops the service and stops it coming back": {
+			call: func(ctx context.Context, s *service.Systemctl) error { return s.Disable(ctx) },
+			want: "disable --now dokkup.service",
+		},
+		// The unit named is nginx, not dokkup. Reload is the one method that
+		// acts on something other than dokkup's own unit.
+		"the proxy is asked to read the file dokkup just wrote": {
+			call: func(ctx context.Context, s *service.Systemctl) error { return s.Reload(ctx, "nginx") },
+			want: "reload nginx",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			systemctl, recorded := stubSystemctl(t, "exit 0")
+
+			if err := tc.call(context.Background(), systemctl); err != nil {
+				t.Fatalf("the call: %v", err)
+			}
+			if got := recorded(); got != tc.want {
+				t.Errorf("systemctl was asked %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // `systemctl is-active` answers through its exit status. Treating a non-zero
 // exit as a failed invocation would make every stopped service look like a
 // broken systemd, and an updater would report the wrong thing after a rollback.

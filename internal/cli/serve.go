@@ -40,6 +40,8 @@ func runServe(env Env, args []string) error {
 	listen := fs.String("listen", service.DefaultListen, "address to listen on")
 	mode := fs.String("mode", string(server.ModeIP), "reachability mode: published or ip")
 	dokkuBinary := fs.String("dokku-binary", dokku.DefaultBinary, "path to the dokku executable")
+	dokkuRunAs := fs.String("dokku-run-as", dokku.DefaultRunAs,
+		"account to run dokku as, through sudo; empty invokes it directly")
 
 	if err := parseFlags(fs, args); err != nil {
 		return err
@@ -47,8 +49,23 @@ func runServe(env Env, args []string) error {
 
 	logger := slog.Default()
 
+	// Built through [dokku.NewExecClient] rather than as a literal, so the
+	// service reaches Dokku the one way that works for the account it runs as:
+	// `sudo -n -u dokku`, which is what the sudoers rule installation writes
+	// permits. Invoking the binary directly fails for the service user with
+	// `sudo: sorry, you are not allowed to preserve the environment`; the
+	// measurement is on [dokku.ExecClient.RunAs].
+	//
+	// --dokku-run-as exists because that is a statement about how this host is
+	// set up rather than a fact about dokkup, and an operator on an unusual one
+	// -- Dokku somewhere else, a wrapper of their own, a rule written by hand
+	// -- can turn the hop off with --dokku-run-as="" without patching anything.
+	client := dokku.NewExecClient()
+	client.Binary = *dokkuBinary
+	client.RunAs = *dokkuRunAs
+
 	srv := server.New(server.Config{
-		Dokku:   &dokku.ExecClient{Binary: *dokkuBinary},
+		Dokku:   client,
 		Mode:    server.Mode(*mode),
 		Version: env.Build.Version,
 		Logger:  logger,

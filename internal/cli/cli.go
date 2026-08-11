@@ -27,6 +27,12 @@ type Build struct {
 // Env is everything a subcommand needs from the outside world, so that tests can
 // supply their own.
 type Env struct {
+	// Stdin is where a question is answered. Installation asks whether to
+	// continue past a domain that does not resolve here, and removal asks the
+	// operator to prove they meant it; both must be answerable by a test and by
+	// a pipe, so neither reads os.Stdin directly.
+	Stdin io.Reader
+
 	Stdout io.Writer
 	Stderr io.Writer
 	Build  Build
@@ -39,6 +45,9 @@ func Run(env Env, args []string) int {
 	}
 	if env.Stderr == nil {
 		env.Stderr = os.Stderr
+	}
+	if env.Stdin == nil {
+		env.Stdin = os.Stdin
 	}
 
 	if len(args) == 0 {

@@ -7,12 +7,12 @@ connections between apps — without opening a terminal for each of them.
 dokkup installs as a single binary, keeps no copy of your applications' state,
 and removes itself without leaving anything behind.
 
-> **Status: being built.** `dokkup serve` and `dokkup update` work today;
-> everything else below — including `dokkup install`, which the Installing
-> section describes — is the agreed milestone rather than working software, and
-> exits saying so. Releases are cut automatically from `main`, so the download
-> and verification steps are real. See [docs/adr](docs/adr) for how it is being
-> built and why.
+> **Status: being built.** `dokkup install`, `dokkup uninstall`, `dokkup serve`
+> and `dokkup update` work today; everything else below — the web interface,
+> `dokkup publish`, and the single-use token the Installing section describes —
+> is the agreed milestone rather than working software, and exits saying so.
+> Releases are cut automatically from `main`, so the download and verification
+> steps are real. See [docs/adr](docs/adr) for how it is being built and why.
 
 ## What it does
 
@@ -46,7 +46,8 @@ and removes itself without leaving anything behind.
 
 - A Dokku host, Dokku 0.38 or newer
 - Root or `sudo` access on that host, to install
-- A domain pointing at the host, to run with a valid certificate
+- A domain pointing at the host, and a certificate and key for it, to publish
+  dokkup at a name a browser will trust
 
 ## Installing
 
@@ -80,14 +81,22 @@ checksum, signature, then the installer:
 curl -fsSL https://raw.githubusercontent.com/eduardotorresdev/dokkup/main/install.sh | sudo sh
 ```
 
-`dokkup install` walks through the setup: it asks for a domain, checks that DNS
-actually points at this host before requesting a certificate, and prints a
-single-use token. Open dokkup in a browser, redeem the token, and you have the
-owner account.
+To publish dokkup at a domain, pass `--domain` along with the certificate to
+serve there — `--cert` and `--key`. It has to be one you supply: Dokku's Let's
+Encrypt plugin issues certificates for apps, and dokkup is not an app, so dokkup
+cannot obtain one for its own name. The installer checks that the certificate
+covers the domain and that DNS actually points at this host before it writes
+anything.
+
+Creating the owner account needs a single-use token, redeemed in the browser.
+This version does not issue one yet; the installer says so where it will later
+print it.
 
 Without a domain, dokkup can be reached at the host's IP address instead. No
 certificate authority will vouch for an IP, so the installer offers a self-signed
-certificate and prints its fingerprint for you to check. In this mode dokkup
+certificate and prints its fingerprint for you to check. It serves that at
+`https://<address>:8443/` rather than on 443, which Dokku's own catch-all owns
+and which refuses connections arriving without a name. In this mode dokkup
 restricts itself to the owner alone and shows a warning on every screen. Run
 `dokkup publish <domain>` when DNS is ready to leave it.
 

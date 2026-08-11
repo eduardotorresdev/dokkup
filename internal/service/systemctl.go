@@ -119,6 +119,40 @@ func (s *Systemctl) ResetFailed(ctx context.Context) error {
 	return err
 }
 
+// DaemonReload implements [Manager].
+//
+// It names no unit, and must not. Measured on the devenv, `systemctl
+// daemon-reload dokkup.service` answers `Too many arguments.` and exits 1
+// without reloading anything, so appending the unit here for symmetry with the
+// other three would leave systemd holding the unit text installation had just
+// replaced.
+func (s *Systemctl) DaemonReload(ctx context.Context) error {
+	_, err := s.run(ctx, "daemon-reload")
+	return err
+}
+
+// Enable implements [Manager].
+func (s *Systemctl) Enable(ctx context.Context) error {
+	_, err := s.run(ctx, "enable", "--now", s.unit())
+	return err
+}
+
+// Disable implements [Manager].
+func (s *Systemctl) Disable(ctx context.Context) error {
+	_, err := s.run(ctx, "disable", "--now", s.unit())
+	return err
+}
+
+// Reload implements [Manager].
+//
+// The unit is the argument rather than [Systemctl.Unit] because the caller is
+// reloading nginx, not dokkup, and a seam that quietly substituted its own unit
+// there would reload the wrong service and report success.
+func (s *Systemctl) Reload(ctx context.Context, unit string) error {
+	_, err := s.run(ctx, "reload", unit)
+	return err
+}
+
 // IsActive implements [Manager].
 func (s *Systemctl) IsActive(ctx context.Context) (bool, error) {
 	out, err := s.run(ctx, "is-active", s.unit())

@@ -2,6 +2,8 @@ package cli_test
 
 import (
 	"bytes"
+	"os"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -14,6 +16,10 @@ func run(t *testing.T, args ...string) (stdout, stderr string, code int) {
 
 	var out, errOut bytes.Buffer
 	code = cli.Run(cli.Env{
+		// Empty rather than nil, so that a command which asks a question here
+		// reads end-of-input and refuses, instead of falling through to the
+		// real os.Stdin and hanging the suite.
+		Stdin:  strings.NewReader(""),
 		Stdout: &out,
 		Stderr: &errOut,
 		Build:  cli.Build{Version: "v0.0.0-test", Commit: "abc1234", Date: "2026-01-01T00:00:00Z"},
@@ -62,8 +68,12 @@ func TestUninstallAlwaysReportsBeforeDoingAnything(t *testing.T) {
 
 	stdout, _, code := run(t, "uninstall")
 
+	// Non-zero whatever this suite is running on: an unprivileged host refuses
+	// before the challenge, and a privileged one reaches the challenge and gets
+	// an empty answer from the reader above. Neither removes anything, and both
+	// print the report first.
 	if code == 0 {
-		t.Fatal("uninstall exited 0 while unimplemented; it must not claim success")
+		t.Fatal("uninstall exited 0 without an answer to its challenge")
 	}
 	for _, want := range []string{
 		hostpaths.Unit, hostpaths.Sudoers, hostpaths.Binary, hostpaths.DataDir,
@@ -114,10 +124,17 @@ func TestUninstallWithPurgeSaysTheDataDirectoryGoesWithoutAsking(t *testing.T) {
 func TestUnimplementedCommandsExitDistinctlyRatherThanLookingLikeSuccess(t *testing.T) {
 	t.Parallel()
 
-	for _, command := range []string{"install", "uninstall", "setup-token"} {
-		t.Run(command, func(t *testing.T) {
+	// install and uninstall have left this list: they do their job now. The
+	// setup token has not, because the store it needs does not exist yet
+	// (#13, #14), and publishing has not either; leaving them here is how the
+	// suite records that both are still owed.
+	for name, args := range map[string][]string{
+		"setup-token": {"setup-token"},
+		"publish":     {"publish", "dokkup.example.com"},
+	} {
+		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			_, stderr, code := run(t, command)
+			_, stderr, code := run(t, args...)
 			if code != 3 {
 				t.Fatalf("exit code = %d, want 3", code)
 			}
@@ -125,6 +142,39 @@ func TestUnimplementedCommandsExitDistinctlyRatherThanLookingLikeSuccess(t *test
 				t.Errorf("stderr did not say the command is unimplemented: %q", stderr)
 			}
 		})
+	}
+}
+
+// Installation is refused before it changes anything, and the plan is printed
+// before the refusal.
+//
+// Which refusal comes back depends on where this runs -- on a developer's macOS
+// it is the platform check, and on an unprivileged Linux host it is the root
+// check -- and the property worth pinning is the one they share: someone who
+// runs `dokkup install` to find out what it would do gets the answer as well as
+// the refusal, and nothing on this machine is touched to produce it.
+func TestInstallRefusesBeforeChangingAnythingAndStillPrintsThePlan(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "linux" && os.Geteuid() == 0 {
+		t.Skip("as root on Linux this would attempt a real installation of this host")
+	}
+
+	stdout, stderr, code := run(t, "install")
+
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stdout, "dokkup install will:") {
+		t.Errorf("the plan was not printed before the refusal: %q", stdout)
+	}
+	for _, want := range []string{hostpaths.Unit, hostpaths.Sudoers, hostpaths.Binary} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("the install plan does not mention %s", want)
+		}
+	}
+	if !strings.Contains(stderr, "dokkup install:") {
+		t.Errorf("stderr did not name the command that refused: %q", stderr)
 	}
 }
 

@@ -246,7 +246,7 @@ func (u *updater) update(ctx context.Context, want string, allowDowngrade bool) 
 	}
 
 	printf(u.env.Stdout, "Waiting for dokkup %s to answer...\n", target.Version())
-	if err := u.waitHealthy(ctx, target.Version()); err != nil {
+	if err := waitHealthy(ctx, u.health, target.Version(), u.timeout, u.interval); err != nil {
 		return u.rollback(ctx, previous, err)
 	}
 
@@ -293,23 +293,30 @@ func (u *updater) swap(downloaded string) (string, error) {
 	return previous, nil
 }
 
-// waitHealthy polls until the service reports the version just installed.
+// waitHealthy polls until health reports the version that was just put in
+// place.
 //
 // Answering at all is not enough. A restart that silently kept the old binary
 // answers exactly as happily as one that took the new one, so what is waited
-// for is the endpoint naming the new version. A degraded reply still counts:
-// that means Dokku is unreachable, which is not the updater's business and not
-// a reason to undo a working binary.
-func (u *updater) waitHealthy(ctx context.Context, want string) error {
-	ctx, cancel := context.WithTimeout(ctx, u.timeout)
+// for is the endpoint naming the version wanted. A degraded reply still counts:
+// that means Dokku is unreachable, which is neither the updater's business nor
+// the installer's, and not a reason to undo a working binary.
+//
+// It is a function rather than a method because installation waits in exactly
+// the same way, twice -- once on the service's own address and once on what
+// nginx serves -- and three copies of a polling loop would be three chances for
+// one of them to decide that answering is enough.
+func waitHealthy(ctx context.Context, health func(context.Context) (string, error),
+	want string, timeout, interval time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	ticker := time.NewTicker(u.interval)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	var last error
 	for {
-		got, err := u.health(ctx)
+		got, err := health(ctx)
 		switch {
 		case err != nil:
 			last = err
@@ -321,7 +328,7 @@ func (u *updater) waitHealthy(ctx context.Context, want string) error {
 
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("dokkup %s did not answer as healthy within %s: %w", want, u.timeout, last)
+			return fmt.Errorf("dokkup %s did not answer as healthy within %s: %w", want, timeout, last)
 		case <-ticker.C:
 		}
 	}
@@ -345,7 +352,7 @@ func (u *updater) rollback(ctx context.Context, previous string, cause error) er
 			ErrRollbackFailed, u.binary, err)
 	}
 
-	if err := u.waitHealthy(ctx, u.running); err != nil {
+	if err := waitHealthy(ctx, u.health, u.running, u.timeout, u.interval); err != nil {
 		return fmt.Errorf("%w: the previous binary is back at %s and is not answering either: %w",
 			ErrRollbackFailed, u.binary, err)
 	}
