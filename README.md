@@ -7,10 +7,12 @@ connections between apps — without opening a terminal for each of them.
 dokkup installs as a single binary, keeps no copy of your applications' state,
 and removes itself without leaving anything behind.
 
-> **Status: scaffolding.** The repository currently holds the domain model,
-> architectural decisions, development environment and project skeleton. The
-> features described below are the agreed milestone, not working software. See
-> [docs/adr](docs/adr) for how it is being built and why.
+> **Status: being built.** `dokkup serve` and `dokkup update` work today;
+> everything else below — including `dokkup install`, which the Installing
+> section describes — is the agreed milestone rather than working software, and
+> exits saying so. Releases are cut automatically from `main`, so the download
+> and verification steps are real. See [docs/adr](docs/adr) for how it is being
+> built and why.
 
 ## What it does
 
@@ -88,6 +90,53 @@ certificate authority will vouch for an IP, so the installer offers a self-signe
 certificate and prints its fingerprint for you to check. In this mode dokkup
 restricts itself to the owner alone and shows a warning on every screen. Run
 `dokkup publish <domain>` when DNS is ready to leave it.
+
+## Updating
+
+```sh
+sudo dokkup update
+```
+
+It resolves the newest release, downloads the binary for this host's
+architecture along with `SHA256SUMS`, and verifies the checksum before anything
+is written. If cosign is installed the signature is verified too; if it is not,
+`update` says so and carries on with the checksum alone, exactly as `install.sh`
+does.
+
+Only a verified binary is swapped in. The previous one is kept, the service is
+restarted, and dokkup then polls `/api/health` until it answers reporting the
+version just installed. Reporting the version is the point of the check: a
+service that came back on the old binary answers just as happily as one that
+came back on the new one. If the new version does not become healthy within the
+timeout (`--timeout`, 60s by default), the previous binary is put back and the
+service restarted again; exit code 4 says the update failed and the old version
+is serving. Exit code 5 says the restored binary did not come back either, and
+that host needs a person.
+
+To ask whether a newer version exists without changing anything:
+
+```sh
+dokkup update --check
+```
+
+This changes nothing, prompts for nothing and needs no root, so it is safe to
+run from cron. It exits 0 whether or not an update is waiting, because an
+available update is not a failure, and exits 1 only when the check could not be
+made at all. That is what lets a cron entry tell "up to date" apart from "could
+not reach GitHub".
+
+To install a particular version rather than the newest:
+
+```sh
+sudo dokkup update --version v0.3.0
+```
+
+Moving to a version older than the running one is refused unless you also pass
+`--allow-downgrade`.
+
+`update` replaces the binary and nothing else: not the data directory, not the
+systemd unit, not the sudoers rule. Updating must not quietly redo the
+installation.
 
 ## Removing
 

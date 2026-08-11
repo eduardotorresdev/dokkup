@@ -110,3 +110,18 @@ The degraded state in which dokkup is reached by IP address rather than a
 published domain. No certificate authority will vouch for it, so dokkup restricts
 itself to the Owner alone and says so on every screen.
 _Avoid_: insecure mode, local mode, dev mode
+
+**Release**:
+A published, signed version of dokkup that a host can move to: a version tag, a
+binary per architecture, its checksum and its signature. Both the version number
+and the changelog entry are derived from the commits since the previous Release,
+so neither is decided by hand.
+_Avoid_: build, tag, artifact
+
+**Update**:
+Moving an Installation from the Release it is running to another one. It
+replaces the binary and nothing else: not the data directory, not the service,
+not the sudoers rule. An Update counts as done only once the new binary answers
+its health endpoint reporting its own version; if it does not, the previous
+binary is put back.
+_Avoid_: upgrade, self-update, patch

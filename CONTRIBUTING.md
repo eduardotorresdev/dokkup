@@ -101,7 +101,8 @@ a contributor licence agreement. `git commit -s` adds the line; that is the whol
 process.
 
 **Use [Conventional Commits](https://www.conventionalcommits.org/).** The
-changelog and the next version number are derived from them.
+changelog and the next version number are derived from them, by a script rather
+than by a person — see [Releases](#releases) for what each type does.
 
 ```
 feat(apps): add process type scaling
@@ -129,6 +130,60 @@ test-integration` output is good evidence.
 
 For anything larger than a bug fix, open an issue first. It is a poor trade to
 write a feature and then discover it was out of scope.
+
+## Releases
+
+**Merging to `main` publishes a release.** There is no separate step and nobody
+cuts one by hand. The Release workflow reads the Conventional Commits since the
+last tag, works out the next version, runs the whole test suite, and only then
+tags and publishes. A merge that fails the suite is never tagged.
+
+Only two types move the version, and it is worth knowing which:
+
+| Type | Version | Changelog section |
+|---|---|---|
+| `feat:` | minor — `0.3.1` → `0.4.0` | Added |
+| `fix:` | patch — `0.3.1` → `0.3.2` | Fixed |
+| `!` or a `BREAKING CHANGE:` footer | major, **clamped to minor while the major is 0** | as its type |
+| `docs:` | none | Documentation |
+| `refactor:`, `build:`, `perf:`, anything else | none | Changed |
+| `chore:`, `test:`, `ci:` | none | omitted entirely |
+
+The consequence to watch for: **a cycle of nothing but `refactor:` or `perf:`
+commits publishes no release at all**, and its changelog entries wait until the
+next `feat:` or `fix:` carries them out. If work deserves to reach people, it
+needs a commit that says `feat:` or `fix:`.
+
+A merge that releases nothing is a success, not a failure. The workflow says so
+and stops; do not read the absence of a release as something to fix.
+
+See what your merge would publish before you open the pull request:
+
+```sh
+make release-preview
+```
+
+It prints the version and diffs the changelog section it would write, and
+changes nothing.
+
+**When a commit subject cannot carry the news**, write the entry yourself under
+`## [Unreleased]` in `CHANGELOG.md`. Anything there is published verbatim in
+place of the generated entries, and the section is emptied once it ships. That is
+the escape hatch for a release that needs a paragraph rather than a list.
+
+**If a release half-happens.** The tag and the branch are pushed atomically, so
+they move together or not at all. The one state that needs a person is a tag that
+pushed while goreleaser then failed — the release page will be missing or empty.
+Delete the tag and push it again from your own credentials, which re-runs the
+tag-triggered path:
+
+```sh
+git push --delete origin vX.Y.Z
+git push origin vX.Y.Z
+```
+
+Do not retry by re-running the workflow on a newer `main`: the artifacts would be
+built from a tree that is no longer the one the tag names.
 
 ## Reporting bugs
 
