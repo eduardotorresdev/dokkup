@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/eduardotorresdev/dokkup/internal/host"
+	"github.com/eduardotorresdev/dokkup/internal/stubprog"
 )
 
 // programs is every host program this package can invoke. stubTools stands in
@@ -78,7 +79,7 @@ func stubTools(t *testing.T, stubs map[string]stub) (*host.Tools, func() []strin
 		}
 		script += "exit " + strconv.Itoa(this.exit) + "\n"
 
-		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		if err := stubprog.Write(path, script); err != nil {
 			t.Fatalf("writing the stub for %s: %v", program, err)
 		}
 		bin[program] = path

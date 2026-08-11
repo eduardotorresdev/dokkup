@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/eduardotorresdev/dokkup/internal/release"
+	"github.com/eduardotorresdev/dokkup/internal/stubprog"
 )
 
 // fakeGitHub serves what a real release looks like from the outside: the API
@@ -149,7 +150,7 @@ func stubCosign(t *testing.T, exitCode int) (binary string, args func() string) 
 
 	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$*\" > '%s'\n"+
 		"echo 'stub cosign speaking' >&2\nexit %d\n", log, exitCode)
-	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+	if err := stubprog.Write(binary, script); err != nil {
 		t.Fatalf("writing the cosign stub: %v", err)
 	}
 

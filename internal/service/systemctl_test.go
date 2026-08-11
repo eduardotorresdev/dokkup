@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/eduardotorresdev/dokkup/internal/service"
+	"github.com/eduardotorresdev/dokkup/internal/stubprog"
 )
 
 // stubSystemctl writes a stand-in for systemctl that records the argument
@@ -23,7 +24,7 @@ func stubSystemctl(t *testing.T, body string) (*service.Systemctl, func() string
 	log := filepath.Join(dir, "args")
 
 	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" + log + "'\n" + body + "\n"
-	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+	if err := stubprog.Write(binary, script); err != nil {
 		t.Fatalf("writing the stub: %v", err)
 	}
 
