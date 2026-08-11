@@ -27,6 +27,12 @@ var identityRegexp = `https://github\.com/` + Repo + `/`
 // log, so this is a network operation and can hang rather than fail.
 const cosignTimeout = 2 * time.Minute
 
+// cosignWaitDelay is how long Wait may go on waiting for output after cosign is
+// gone. Killing a process on a context deadline does not close the pipes it was
+// writing to, so without this the timeout above would not be enforceable;
+// internal/dokku carries the measurement and the full explanation.
+const cosignWaitDelay = time.Second
+
 // checksumFor returns the expected checksum of name from a SHA256SUMS body.
 //
 // An entry that is not there is an error, deliberately. `sha256sum --check
@@ -96,6 +102,7 @@ func (s *Source) verifySignature(ctx context.Context, rel Release, name, path, d
 	)
 	cmd.Stderr = &stderr
 	cmd.Stdin = nil
+	cmd.WaitDelay = cosignWaitDelay
 
 	if err := cmd.Run(); err != nil {
 		return false, fmt.Errorf("signature verification failed for %s: %w: %s -- do not run this binary",

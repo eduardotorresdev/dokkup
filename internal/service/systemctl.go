@@ -18,6 +18,17 @@ const DefaultBinary = "/usr/bin/systemctl"
 // than one that reports a stuck unit.
 const defaultTimeout = 30 * time.Second
 
+// waitDelay is how long Wait may go on waiting for output after the process it
+// started is gone.
+//
+// Without it, defaultTimeout is advisory: killing the process on a context
+// deadline does not close the stdout and stderr pipes, and anything that
+// inherited them keeps Wait blocked. internal/dokku carries the measurement and
+// the full explanation. The same bound belongs here, because the caller is
+// `dokkup update` deciding whether to roll back, and an unbounded restart is
+// the one thing it cannot recover from.
+const waitDelay = time.Second
+
 // Systemctl drives the local systemd through systemctl(1).
 //
 // Commands are argument vectors executed directly. As in internal/dokku, there
@@ -77,6 +88,7 @@ func (s *Systemctl) run(ctx context.Context, args ...string) ([]byte, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	cmd.Stdin = nil
+	cmd.WaitDelay = waitDelay
 
 	if err := cmd.Run(); err != nil {
 		return stdout.Bytes(), &CommandError{

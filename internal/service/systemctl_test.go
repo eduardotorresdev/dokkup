@@ -143,6 +143,12 @@ func TestIsActiveReadsTheStateRatherThanTheExitStatus(t *testing.T) {
 func TestAnInvocationThatHangsIsGivenUpOn(t *testing.T) {
 	t.Parallel()
 
+	// This one only bites on Linux, which is the platform that matters: killing
+	// the shell there leaves the sleep holding the stdout pipe, and Wait goes on
+	// waiting for it. On macOS the pipes close as the process dies, so the test
+	// passes whether or not the bound it is checking exists. It was written on
+	// macOS, passed there, and failed the moment CI ran it -- measured at 30s
+	// for a 100ms timeout.
 	systemctl, _ := stubSystemctl(t, "sleep 30")
 	systemctl.Timeout = 100 * time.Millisecond
 

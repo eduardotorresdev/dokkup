@@ -18,6 +18,11 @@ const DefaultBinary = "/usr/bin/dokku"
 // request open indefinitely.
 const defaultTimeout = 30 * time.Second
 
+// waitDelay is how long Wait may go on waiting for output after the process it
+// started is gone. It is what makes defaultTimeout enforceable rather than
+// advisory; see the comment where it is used.
+const waitDelay = time.Second
+
 // ExecClient invokes the Dokku binary on the local host.
 //
 // Commands are built as argument vectors and executed directly. There is no
@@ -76,6 +81,24 @@ func (c *ExecClient) run(ctx context.Context, args ...string) ([]byte, error) {
 	// Dokku is not interactive here, and a command that blocks reading standard
 	// input would hold the request open until the timeout.
 	cmd.Stdin = nil
+
+	// Without this the timeout above is a suggestion. When the context expires,
+	// os/exec kills the process it started and nothing else, but Wait does not
+	// return until the stdout and stderr pipes are closed -- and every process
+	// that inherited them holds them open. `dokku` is a shell script that forks
+	// docker, git and plugin hooks, so there is always something else holding
+	// them.
+	//
+	// Measured on Linux with a stub that sleeps 30s and a 100ms timeout: Run
+	// returned after 30.02s without a WaitDelay and after 1.11s with one. macOS
+	// returns immediately either way, which is why this was invisible until CI
+	// ran the test.
+	//
+	// The cost is that a command whose output was still draining is reported as
+	// a failure rather than waited on. That is the right way round: the caller
+	// is an HTTP handler or an updater deciding whether to roll back, and both
+	// would rather hear a wrong answer late than no answer at all.
+	cmd.WaitDelay = waitDelay
 
 	if err := cmd.Run(); err != nil {
 		return nil, &CommandError{

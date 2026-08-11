@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/eduardotorresdev/dokkup/internal/dokku"
 )
@@ -87,6 +88,32 @@ func TestAppsReadsTheNamesAndNotDokkusNarration(t *testing.T) {
 				t.Errorf("apps = %v, want %v", apps, tc.want)
 			}
 		})
+	}
+}
+
+// A Dokku that has hung must not hold the HTTP request that asked open. The
+// timeout alone does not achieve that: it kills dokku and nothing else, while
+// Wait goes on waiting for the stdout pipe -- which every process dokku forked,
+// and it forks docker, git and plugin hooks, is still holding.
+//
+// Like its counterpart in internal/service, this only bites on Linux. macOS
+// closes the pipes as the process dies and reports the timeout honestly.
+func TestAHungDokkuIsGivenUpOn(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "dokku")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+		t.Fatalf("writing the stub: %v", err)
+	}
+	client := &dokku.ExecClient{Binary: binary, Timeout: 100 * time.Millisecond}
+
+	start := time.Now()
+	if _, err := client.Version(context.Background()); err == nil {
+		t.Fatal("a hung invocation was reported as success")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("waited %v for a 100ms timeout", elapsed)
 	}
 }
 
