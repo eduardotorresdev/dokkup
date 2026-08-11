@@ -14,6 +14,38 @@ of the generated entries, and the section is emptied once it ships.
 
 ## [Unreleased]
 
+`dokkup install --domain` now gets its own certificate. Pass a name and an
+email, and dokkup obtains a certificate for it from Let's Encrypt and renews it
+thirty days before expiry, without a plugin and without a certificate file of
+yours. It speaks ACME directly: Dokku's Let's Encrypt plugin issues certificates
+for apps, dokkup is not an app, and installation still leaves that plugin exactly
+as it found it.
+
+Because a certificate authority proves the name by fetching a token from this
+host on port 80, and nginx will not start with a certificate file missing,
+installation writes a self-signed certificate first, brings the service up, and
+waits while the service replaces it — up to ninety seconds, then it says what is
+being served in the meantime and where the reason is written down. A certificate
+that has not arrived is not a failed installation: the service keeps trying every
+fifteen minutes, and nothing has to be run again by hand.
+
+`--cert` and `--key` still work and are never renewed over, because a domain is
+not consent to replace a certificate you chose. Passing only one of the two is
+refused rather than half-used. Installing without `--acme-email` says so, because
+that address is the only warning that reaches you when renewal has been quietly
+failing for a month.
+
+Two things this found on the way, both of which made a first installation
+fail on a host where nothing was wrong: nginx is now reloaded before the service
+starts, so the certificate authority has somewhere to fetch the token from on the
+first attempt rather than the second; and a certificate issued after the
+authority's answer to the finalize request is now collected from the order,
+rather than abandoned on a URL the authority is not obliged to send.
+
+Re-running `dokkup install` on a host that already has it restarts the service,
+which it did not before — so a second installation is now actually running the
+binary and the flags it just installed.
+
 ## [0.2.0] - 2026-08-11
 
 `dokkup install` and `dokkup uninstall` now do what they print. Installation

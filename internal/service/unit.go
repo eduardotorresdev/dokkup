@@ -27,6 +27,25 @@ type UnitConfig struct {
 	// Mode is how dokkup is reachable, "published" or "ip". Empty means
 	// [DefaultMode].
 	Mode string
+
+	// Domain is the name dokkup answers to, when it has one.
+	Domain string
+
+	// ManageCertificate asks the service to obtain and renew the certificate
+	// for Domain over ACME.
+	//
+	// It is separate from Domain because an operator who supplied their own
+	// certificate has a domain too, and renewing over the top of a certificate
+	// somebody else issued -- an internal CA, a wildcard bought for the year --
+	// would replace what they chose with something they did not ask for.
+	ManageCertificate bool
+
+	// ACMEEmail is the contact a certificate authority warns about expiry at.
+	ACMEEmail string
+
+	// ACMEDirectory points at a certificate authority other than Let's Encrypt.
+	// It exists so that a test can issue against one it runs itself.
+	ACMEDirectory string
 }
 
 // UnitFile renders the systemd unit.
@@ -74,6 +93,23 @@ func UnitFile(cfg UnitConfig) string {
 		mode = DefaultMode
 	}
 
+	// Appended rather than always present, so that the ExecStart of an
+	// installation that has no domain says so by saying nothing, and `systemctl
+	// cat dokkup` stays readable as the record of how this host was set up.
+	var extra strings.Builder
+	if cfg.Domain != "" {
+		fmt.Fprintf(&extra, " --domain %s", cfg.Domain)
+	}
+	if cfg.ManageCertificate {
+		extra.WriteString(" --manage-certificate")
+	}
+	if cfg.ACMEEmail != "" {
+		fmt.Fprintf(&extra, " --acme-email %s", cfg.ACMEEmail)
+	}
+	if cfg.ACMEDirectory != "" {
+		fmt.Fprintf(&extra, " --acme-directory %s", cfg.ACMEDirectory)
+	}
+
 	return fmt.Sprintf(`[Unit]
 Description=dokkup -- a web interface for a Dokku host
 Documentation=https://github.com/eduardotorresdev/dokkup
@@ -86,7 +122,7 @@ Wants=network-online.target
 
 [Service]
 Type=exec
-ExecStart=%s serve --listen %s --mode %s
+ExecStart=%s serve --listen %s --mode %s%s
 User=%s
 Group=%s
 Restart=on-failure
@@ -103,7 +139,7 @@ ReadWritePaths=%s
 [Install]
 WantedBy=multi-user.target
 `,
-		hostpaths.Binary, listen, mode,
+		hostpaths.Binary, listen, mode, extra.String(),
 		hostpaths.User, hostpaths.Group,
 		hostpaths.DataDir,
 	)

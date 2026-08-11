@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eduardotorresdev/dokkup/internal/acme"
 	"github.com/eduardotorresdev/dokkup/internal/hostpaths"
 	"github.com/eduardotorresdev/dokkup/internal/proxy"
 	"github.com/eduardotorresdev/dokkup/internal/service"
@@ -214,6 +215,67 @@ func TestOnlyThePublishedFormSendsAPlainRequestSomewhereElse(t *testing.T) {
 
 			if want := cfg.How == proxy.AtDomain; redirects != want {
 				t.Errorf("redirects = %v, want %v:\n%s", redirects, want, vhost)
+			}
+		})
+	}
+}
+
+// The one path that must not be redirected, in the one form that redirects.
+//
+// An HTTP-01 validation follows no scheme change, so a port-80 block that sent
+// everything to https:// would fail every validation -- including the first,
+// when the only certificate on disk is the self-signed placeholder the authority
+// would then refuse. A certificate that stops renewing fails ninety days after
+// the change that broke it, which is why this is asserted rather than left to
+// the day somebody notices.
+func TestThePublishedFormLetsTheChallengeThroughInsteadOfRedirectingIt(t *testing.T) {
+	t.Parallel()
+
+	vhost := proxy.VhostFile(proxy.VhostConfig{How: proxy.AtDomain, Domain: "dokkup.example.com"})
+
+	location := "location ^~ " + acme.ChallengePath
+	if !strings.Contains(vhost, location) {
+		t.Fatalf("the vhost has no %q:\n%s", location, vhost)
+	}
+
+	// Ahead of the redirect, and marked ^~ so that no regex location a later
+	// version adds can silently take the path back.
+	challenge := strings.Index(vhost, location)
+	redirect := strings.Index(vhost, "return 301 https://")
+	if redirect < challenge {
+		t.Errorf("the redirect is written before the challenge location:\n%s", vhost)
+	}
+
+	// And it goes to dokkup rather than to a directory on disk: nginx's workers
+	// run as www-data on a Dokku host, and dokkup's data directory is 0750
+	// dokkup:dokkup, so a webroot would be unreadable by the process serving it.
+	block := vhost[challenge:]
+	if end := strings.Index(block, "}"); end >= 0 {
+		block = block[:end]
+	}
+	if !strings.Contains(block, "proxy_pass http://"+service.DefaultListen) {
+		t.Errorf("the challenge is not proxied to the service:\n%s", block)
+	}
+	if strings.Contains(block, "root ") || strings.Contains(block, "alias ") {
+		t.Errorf("the challenge is served from a directory nginx's workers cannot read:\n%s", block)
+	}
+}
+
+// The other forms have no port-80 name to be validated at, so the location is
+// not merely unnecessary there -- in IP mode it would be a path answering on a
+// host that can never hold a certificate for the address it is reached by.
+func TestOnlyThePublishedFormCarriesTheChallengeLocation(t *testing.T) {
+	t.Parallel()
+
+	for name, cfg := range everyForm {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			vhost := proxy.VhostFile(cfg)
+			carries := strings.Contains(vhost, acme.ChallengePath)
+
+			if want := cfg.How == proxy.AtDomain; carries != want {
+				t.Errorf("carries the challenge = %v, want %v:\n%s", carries, want, vhost)
 			}
 		})
 	}

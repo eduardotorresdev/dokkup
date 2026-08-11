@@ -162,6 +162,7 @@ func newInstallHost(t *testing.T) *installHost {
 		// a loaded machine still gets several attempts.
 		timeout:  300 * time.Millisecond,
 		interval: 5 * time.Millisecond,
+		certWait: 300 * time.Millisecond,
 		health:   func(context.Context) (string, error) { return installVersion, nil },
 		resolve: func(context.Context, string) ([]net.IP, error) {
 			return []net.IP{net.ParseIP(installAddress)}, nil
@@ -205,6 +206,21 @@ func (h *installHost) read(path string) string {
 }
 
 func (h *installHost) has(path string) bool { return exists(filepath.Join(h.root, path)) }
+
+// leafAt reads back a certificate this host had written to it.
+func (h *installHost) leafAt(path string) *x509.Certificate {
+	h.t.Helper()
+
+	block, _ := pem.Decode([]byte(h.read(path)))
+	if block == nil {
+		h.t.Fatalf("what was written to %s is not PEM", path)
+	}
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		h.t.Fatalf("parsing the certificate at %s: %v", path, err)
+	}
+	return leaf
+}
 
 func (h *installHost) perm(path string) fs.FileMode {
 	h.t.Helper()
@@ -360,6 +376,53 @@ func certificateForDomain(t *testing.T, name string) (certPath, keyPath string) 
 	return certPath, keyPath
 }
 
+// certificateFromAnAuthority is a certificate somebody other than this host
+// signed, which is the only thing that tells installation the wait is over: a
+// self-signed one is the placeholder it wrote itself.
+func certificateFromAnAuthority(t *testing.T, name string) []byte {
+	t.Helper()
+
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generating the authority's key: %v", err)
+	}
+	ca := x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{Organization: []string{"a certificate authority"}},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, &ca, &ca, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("signing the authority's certificate: %v", err)
+	}
+	issuer, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		t.Fatalf("reading the authority's certificate back: %v", err)
+	}
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generating a key: %v", err)
+	}
+	leaf := x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		DNSNames:     []string{name},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(90 * 24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &leaf, issuer, &key.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("signing the certificate: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
 func TestInstallCreatesTheUserInTheDokkuGroupAndTheDataDirectoryItCannotBeReadOutOf(t *testing.T) {
 	t.Parallel()
 
@@ -410,10 +473,15 @@ func TestInstallWritesASudoersRuleForOneProgramAndNoWildcard(t *testing.T) {
 		t.Fatalf("install: %v", err)
 	}
 
-	// One program, run as one account. The runas is Dokku's own user and not
-	// root, so the ceiling on what this rule can escalate to is that account
-	// rather than the whole host.
-	const want = "dokkup ALL=(dokku) NOPASSWD: /usr/bin/dokku\n"
+	// Two programs, each named with its arguments. The first runs as Dokku's own
+	// account rather than root, so the ceiling on what it can escalate to is
+	// that account; the second does run as root, and what bounds it instead is
+	// that sudo matches arguments exactly -- measured on the dev environment,
+	// `systemctl reload ssh` under this rule alone answers `sudo: a password is
+	// required`. It is what a renewed certificate needs, because nginx reads
+	// certificates once, at load.
+	const want = "dokkup ALL=(dokku) NOPASSWD: /usr/bin/dokku\n" +
+		"dokkup ALL=(root) NOPASSWD: /usr/bin/systemctl reload nginx\n"
 
 	rule, written := h.ops.Sudoers[filepath.Join(h.root, hostpaths.Sudoers)]
 	if !written {
@@ -426,8 +494,13 @@ func TestInstallWritesASudoersRuleForOneProgramAndNoWildcard(t *testing.T) {
 		t.Errorf("the rule has a wildcard in it, so it permits programs nobody chose: %q", rule)
 	}
 	if strings.Contains(rule, "ALL)") {
-		t.Errorf("the rule runs as anyone, root included, which is the whole host rather than "+
-			"the dokku account: %q", rule)
+		t.Errorf("the rule runs as anyone, which is every account on this host rather than the "+
+			"two this one names: %q", rule)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(rule), "\n") {
+		if strings.Count(line, "NOPASSWD:") != 1 {
+			t.Errorf("this line does not permit exactly one thing: %q", line)
+		}
 	}
 }
 
@@ -616,35 +689,245 @@ func TestInstallingTwiceChangesNothingTheSecondTime(t *testing.T) {
 	}
 }
 
-func TestInstallRefusesADomainItCannotGetACertificateFor(t *testing.T) {
+// A domain with no certificate is the ordinary way to install at a name, and
+// what makes it work is the ordering: a certificate authority proves this host
+// answers for the name by fetching a token from it, so the certificate cannot
+// exist before the service does, and nginx will not load a `listen 443 ssl`
+// block whose certificate file is missing. Installation therefore writes a
+// placeholder and starts the service, which replaces it.
+func TestADomainWithNoCertificateIsInstalledWithAPlaceholderForTheServiceToReplace(t *testing.T) {
 	t.Parallel()
 
 	h := newInstallHost(t)
 	h.inst.cfg.domain = installDomain
-	before := h.tree()
 
-	err := h.install()
-
-	if err == nil {
-		t.Fatal("installation went ahead at a domain with no certificate to serve there")
-	}
-	// Dokku's Let's Encrypt plugin issues certificates for apps, and dokkup is
-	// not an app, so the refusal has to say what the operator can do instead.
-	if !strings.Contains(err.Error(), "--cert") {
-		t.Errorf("the refusal does not name the flag that would work: %v", err)
-	}
-	if !strings.Contains(err.Error(), "install by IP address") {
-		t.Errorf("the refusal does not offer installing at this host's address: %v", err)
+	if err := h.install(); err != nil {
+		t.Fatalf("install: %v", err)
 	}
 
-	if changes := installTreeChanges(before, h.tree()); len(changes) > 0 {
-		t.Errorf("a refused installation wrote:\n  %s", strings.Join(changes, "\n  "))
+	leaf := h.leafAt(hostpaths.TLSCert)
+	if err := leaf.VerifyHostname(installDomain); err != nil {
+		t.Errorf("the placeholder does not cover %s, so nginx would serve a certificate for "+
+			"something else until the real one arrived: %v", installDomain, err)
 	}
-	if _, ok := h.ops.Users[hostpaths.User]; ok {
-		t.Errorf("a refused installation created the %s account", hostpaths.User)
+	if err := leaf.CheckSignatureFrom(leaf); err != nil {
+		t.Errorf("the placeholder is not self-signed, so the service would not recognise it as "+
+			"one to replace: %v", err)
 	}
-	if len(h.ops.Dirs) != 0 || len(h.ops.Sudoers) != 0 {
-		t.Errorf("a refused installation asked for %v and %v", h.ops.Dirs, h.ops.Sudoers)
+
+	// The unit is what carries the decision into the running service. Without
+	// these two the placeholder is simply what this host serves, for ten years.
+	unit := h.read(hostpaths.Unit)
+	for _, want := range []string{"--domain " + installDomain, "--manage-certificate"} {
+		if !strings.Contains(unit, want) {
+			t.Errorf("the unit does not tell the service to %s:\n%s", want, unit)
+		}
+	}
+
+	if h.proved.how != proxy.AtDomain {
+		t.Errorf("installation checked the proxy as %v, want the published form", h.proved.how)
+	}
+}
+
+// nginx has to be serving the new vhost before the service starts, because the
+// service asks a certificate authority for a certificate the moment it comes
+// up, and the authority proves the name by fetching a token back through that
+// very vhost. Measured on the dev environment with the order the other way
+// round: the first attempt hit Dokku's catch-all, which answers `return 444`,
+// and the operator waited fifteen minutes for a retry on a host where nothing
+// was wrong.
+func TestNginxIsServingTheNewVhostBeforeTheServiceThatNeedsItStarts(t *testing.T) {
+	t.Parallel()
+
+	h := newInstallHost(t)
+	h.inst.cfg.domain = installDomain
+
+	if err := h.install(); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	reload := slices.Index(h.manager.Calls, "reload "+nginxUnit)
+	enable := slices.Index(h.manager.Calls, "enable")
+	if reload < 0 || enable < 0 {
+		t.Fatalf("nginx was not reloaded or the service was not enabled: %v", h.manager.Calls)
+	}
+	if reload > enable {
+		t.Errorf("the service was started before nginx read the vhost it needs: %v", h.manager.Calls)
+	}
+}
+
+// `systemctl enable --now` starts a stopped unit and leaves a running one
+// alone, so without the restart a second installation leaves the previous
+// process serving -- with the previous binary, the previous domain and the
+// previous flags -- while every check here passes, the health endpoint included,
+// because the version it answers with has not changed either.
+func TestASecondInstallationRestartsTheServiceOntoWhatItJustInstalled(t *testing.T) {
+	t.Parallel()
+
+	h := newInstallHost(t)
+	h.inst.cfg.plainHTTP = true
+	h.manager.Active = true
+
+	if err := h.install(); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	if h.manager.Restarts() != 1 {
+		t.Errorf("the service was restarted %d times onto a host that was already running one: %v",
+			h.manager.Restarts(), h.manager.Calls)
+	}
+}
+
+func TestAFirstInstallationDoesNotRestartAServiceItJustStarted(t *testing.T) {
+	t.Parallel()
+
+	h := newInstallHost(t)
+	h.inst.cfg.plainHTTP = true
+
+	if err := h.install(); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	if h.manager.Restarts() != 0 {
+		t.Errorf("a first installation restarted the service it had just started: %v",
+			h.manager.Calls)
+	}
+}
+
+// The pair is refused rather than half-used, because the alternative reading --
+// one of them means "get the other from a certificate authority" -- is a
+// certificate the operator did not ask for replacing one they chose.
+func TestOneHalfOfACertificatePairIsRefusedBeforeAnythingIsWritten(t *testing.T) {
+	t.Parallel()
+
+	cert, key := certificateForDomain(t, installDomain)
+
+	for name, only := range map[string]func(cfg *installConfig){
+		"the certificate without its key": func(cfg *installConfig) { cfg.cert = cert },
+		"the key without its certificate": func(cfg *installConfig) { cfg.key = key },
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newInstallHost(t)
+			h.inst.cfg.domain = installDomain
+			only(&h.inst.cfg)
+			before := h.tree()
+
+			err := h.install()
+			if err == nil {
+				t.Fatal("installation went ahead with half a certificate pair")
+			}
+			if !strings.Contains(err.Error(), "--cert") || !strings.Contains(err.Error(), "--key") {
+				t.Errorf("the refusal does not name both flags: %v", err)
+			}
+
+			if changes := installTreeChanges(before, h.tree()); len(changes) > 0 {
+				t.Errorf("a refused installation wrote:\n  %s", strings.Join(changes, "\n  "))
+			}
+			if _, ok := h.ops.Users[hostpaths.User]; ok {
+				t.Errorf("a refused installation created the %s account", hostpaths.User)
+			}
+			if len(h.ops.Dirs) != 0 || len(h.ops.Sudoers) != 0 {
+				t.Errorf("a refused installation asked for %v and %v", h.ops.Dirs, h.ops.Sudoers)
+			}
+		})
+	}
+}
+
+// Renewal begins thirty days out and retries every fifteen minutes, so a host
+// whose port 80 closed months ago looks exactly like a working one until the
+// morning the certificate expires. The authority's warning is the only thing
+// that reaches somebody who is not already looking, and it needs an address.
+func TestAnInstallationWithNobodyToWarnAboutExpiryIsToldSo(t *testing.T) {
+	t.Parallel()
+
+	for name, email := range map[string]string{
+		"with no contact": "",
+		"with a contact":  "operator@example.com",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newInstallHost(t)
+			h.inst.cfg.domain = installDomain
+			h.inst.cfg.acmeEmail = email
+
+			if err := h.install(); err != nil {
+				t.Fatalf("install: %v", err)
+			}
+
+			warned := strings.Contains(h.stdout.String(), "--acme-email")
+			if want := email == ""; warned != want {
+				t.Errorf("warned about the missing contact = %v, want %v:\n%s",
+					warned, want, h.stdout.String())
+			}
+		})
+	}
+}
+
+func TestInstallationNamesWhoIssuedTheCertificateOnceItArrives(t *testing.T) {
+	t.Parallel()
+
+	h := newInstallHost(t)
+	h.inst.cfg.domain = installDomain
+
+	// The service is what gets the certificate, and it is running by the time
+	// the proxy has been reloaded. Standing in for it here is the closest a
+	// test without a certificate authority can get to the real sequence.
+	h.inst.confirmProxy = func(_ context.Context, s site) error {
+		h.proved = s
+		h.write(filepath.Join(h.root, hostpaths.TLSCert),
+			string(certificateFromAnAuthority(t, installDomain)), readableMode)
+		return nil
+	}
+
+	if err := h.install(); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	if got := h.stdout.String(); !strings.Contains(got, "a certificate authority") {
+		t.Errorf("installation did not say who issued the certificate:\n%s", got)
+	}
+	if got := h.stderr.String(); strings.Contains(got, "No certificate has arrived") {
+		t.Errorf("installation warned about a certificate it had:\n%s", got)
+	}
+}
+
+// A certificate that does not arrive is not a failed installation. Everything
+// being waited on is outside this host -- DNS, a firewall, an authority's queue
+// -- and tearing the installation down over any of them would undo the work
+// that has to exist before the next attempt can succeed.
+func TestACertificateThatDoesNotArriveLeavesTheInstallationStandingAndSaysWhereToLook(t *testing.T) {
+	t.Parallel()
+
+	h := newInstallHost(t)
+	h.inst.cfg.domain = installDomain
+
+	if err := h.install(); err != nil {
+		t.Fatalf("installation was undone over a certificate that had not arrived yet: %v", err)
+	}
+
+	warning := h.stderr.String()
+	if !strings.Contains(warning, "self-signed") {
+		t.Errorf("the warning does not say what is being served in the meantime:\n%s", warning)
+	}
+	if !strings.Contains(warning, "journalctl") {
+		t.Errorf("the warning does not say where the reason is written down:\n%s", warning)
+	}
+	if !strings.Contains(warning, "port 80") {
+		t.Errorf("the warning does not name the usual cause:\n%s", warning)
+	}
+
+	// And the host is left installed rather than half-installed.
+	for _, path := range []string{hostpaths.Binary, hostpaths.Unit, hostpaths.Vhost,
+		hostpaths.TLSCert} {
+		if !h.has(path) {
+			t.Errorf("%s is not there, so the installation was unwound", path)
+		}
+	}
+	if !slices.Contains(h.manager.Calls, "enable") {
+		t.Errorf("the service was not left running: %v", h.manager.Calls)
 	}
 }
 

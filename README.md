@@ -46,8 +46,9 @@ and removes itself without leaving anything behind.
 
 - A Dokku host, Dokku 0.38 or newer
 - Root or `sudo` access on that host, to install
-- A domain pointing at the host, and a certificate and key for it, to publish
-  dokkup at a name a browser will trust
+- A domain pointing at the host, reachable on port 80 from the internet, to
+  publish dokkup at a name a browser will trust. dokkup gets the certificate
+  itself; bring your own with `--cert` and `--key` if you would rather
 
 ## Installing
 
@@ -81,12 +82,24 @@ checksum, signature, then the installer:
 curl -fsSL https://raw.githubusercontent.com/eduardotorresdev/dokkup/main/install.sh | sudo sh
 ```
 
-To publish dokkup at a domain, pass `--domain` along with the certificate to
-serve there — `--cert` and `--key`. It has to be one you supply: Dokku's Let's
-Encrypt plugin issues certificates for apps, and dokkup is not an app, so dokkup
-cannot obtain one for its own name. The installer checks that the certificate
-covers the domain and that DNS actually points at this host before it writes
-anything.
+To publish dokkup at a domain, pass `--domain` and nothing else:
+
+```sh
+sudo dokkup install --domain dokkup.example.com --acme-email you@example.com
+```
+
+dokkup gets its own certificate from Let's Encrypt and renews it thirty days
+before it expires. It speaks ACME itself rather than going through Dokku's Let's
+Encrypt plugin, which issues certificates for apps — dokkup is not an app, and
+installation leaves that plugin alone either way. The name must reach this host
+on port 80 from the internet, because that is how a certificate authority proves
+the name is yours; dokkup serves a self-signed certificate for the minute or two
+in between, and the installer waits and tells you who issued the real one.
+
+Pass `--cert` and `--key` instead to serve a certificate you already have — an
+internal CA, a wildcard you bought. dokkup never renews over one of those. It
+checks that the certificate covers the domain, and that DNS points at this host,
+before writing anything.
 
 Creating the owner account needs a single-use token, redeemed in the browser.
 This version does not issue one yet; the installer says so where it will later

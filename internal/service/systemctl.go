@@ -42,6 +42,16 @@ type Systemctl struct {
 
 	// Timeout bounds a single invocation. Zero means [defaultTimeout].
 	Timeout time.Duration
+
+	// Sudo is the path to sudo, for a caller that is not root. Empty invokes
+	// systemctl directly, which is what installation, update and removal do.
+	//
+	// The running service is what needs it: it renews dokkup's certificate and
+	// then has to ask nginx to read the new files, because nginx reads
+	// certificates once, at load. Only `-n` is passed, so a host where the rule
+	// is missing fails immediately with `sudo: a password is required` rather
+	// than blocking a service that has no terminal to be asked on.
+	Sudo string
 }
 
 var _ Manager = (*Systemctl)(nil)
@@ -74,6 +84,10 @@ func (s *Systemctl) run(ctx context.Context, args ...string) ([]byte, error) {
 	binary := s.Binary
 	if binary == "" {
 		binary = DefaultBinary
+	}
+	if s.Sudo != "" {
+		args = append([]string{"-n", binary}, args...)
+		binary = s.Sudo
 	}
 	timeout := s.Timeout
 	if timeout <= 0 {
