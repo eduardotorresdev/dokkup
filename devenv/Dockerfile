@@ -16,6 +16,15 @@
 # first `make devenv-up` therefore takes several minutes; later ones do not,
 # because the container is kept rather than recreated.
 
+# This base image is not a free choice: it is whatever the pinned Dokku below
+# installs on. Dokku 0.38.7's bootstrap.sh declares
+#
+#     SUPPORTED_VERSIONS="Debian [11, 12, 13], Ubuntu [22.04, 24.04]"
+#
+# and hard-fails on anything else, so a newer Ubuntu does not make the devenv
+# newer -- it makes it a container with no Dokku in it. The two lines move
+# together or not at all. .github/dependabot.yml declines the automatic bump for
+# this reason.
 FROM ubuntu:24.04
 
 ARG DOKKU_VERSION=v0.38.7

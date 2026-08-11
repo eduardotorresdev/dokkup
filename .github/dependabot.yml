@@ -16,6 +16,15 @@ updates:
     commit-message:
       prefix: build
       include: scope
+    ignore:
+      # TypeScript 7 is the native compiler, and svelte-check refuses it: it
+      # wants TypeScript 6 and 7 installed side by side under an npm alias plus
+      # an --tsgo-experimental-api flag. The gate that decides whether a release
+      # ships should not run on an experimental API to typecheck one page, so
+      # the frontend stays on 6 until svelte-check takes 7 on its own. Drop this
+      # entry then; nothing else here is holding it back.
+      - dependency-name: typescript
+        versions: ['>=7']
 
   - package-ecosystem: github-actions
     directory: /
@@ -32,3 +41,12 @@ updates:
     commit-message:
       prefix: build
       include: scope
+    ignore:
+      # The devenv's Ubuntu is chosen by Dokku, not by us: 0.38.7's bootstrap
+      # exits rather than install on anything outside Ubuntu 22.04/24.04. A bump
+      # here produces a container with no Dokku in it, which the integration
+      # tests would report as a missing devenv rather than as a bad base image.
+      # See the comment above FROM in devenv/Dockerfile. Lift this when the
+      # pinned DOKKU_VERSION supports a newer release, and move both together.
+      - dependency-name: ubuntu
+        update-types: [version-update:semver-major, version-update:semver-minor]
