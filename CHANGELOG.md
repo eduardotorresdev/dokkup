@@ -14,6 +14,8 @@ of the generated entries, and the section is emptied once it ships.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-11
+
 This is the first release, and it is a foundation rather than a product.
 `dokkup serve` and `dokkup update` do their jobs; `dokkup install` prints exactly
 what installing would do and then exits saying it is not built yet, so reaching a
@@ -42,4 +44,5 @@ interface reports whether Dokku is reachable and nothing more.
   the version just installed; `--check` reports whether an update exists and
   changes nothing, so it is safe to run from cron
 
-[unreleased]: https://github.com/eduardotorresdev/dokkup/commits/main
+[unreleased]: https://github.com/eduardotorresdev/dokkup/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/eduardotorresdev/dokkup/releases/tag/v0.1.0
