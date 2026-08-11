@@ -31,7 +31,9 @@ fifteen minutes, and nothing has to be run again by hand.
 
 `--cert` and `--key` still work and are never renewed over, because a domain is
 not consent to replace a certificate you chose. Passing only one of the two is
-refused rather than half-used.
+refused rather than half-used. Installing without `--acme-email` says so, because
+that address is the only warning that reaches you when renewal has been quietly
+failing for a month.
 
 Two things this found on the way, both of which made a first installation
 fail on a host where nothing was wrong: nginx is now reloaded before the service

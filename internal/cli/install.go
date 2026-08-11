@@ -1183,6 +1183,18 @@ func (i *installer) report(s site) {
 		printf(i.env.Stdout, "  it expires, so nothing here is on a calendar. Renewal needs %s\n", i.cfg.domain)
 		printf(i.env.Stdout, "  to keep reaching this host on port 80; a certificate authority checks\n")
 		printf(i.env.Stdout, "  that every time, not only the first.\n\n")
+
+		// The contact is the last line of defence, and the only one that
+		// reaches somebody who is not already looking. Renewal begins thirty
+		// days out and retries every fifteen minutes, so a host whose port 80
+		// was closed months ago looks exactly like a working one until the
+		// morning the certificate expires -- unless an authority has an address
+		// to write to.
+		if i.cfg.acmeEmail == "" {
+			printf(i.env.Stdout, "  There is no --acme-email on this installation, so the certificate\n")
+			printf(i.env.Stdout, "  authority has nowhere to warn you if renewal starts failing, and\n")
+			printf(i.env.Stdout, "  the first sign would be the expiry itself. Re-run install with one.\n\n")
+		}
 	}
 	if s.how == proxy.AtIPPlain {
 		printf(i.env.Stdout, "  This is plain HTTP. Anyone who can see the network between you and\n")

@@ -835,6 +835,37 @@ func TestOneHalfOfACertificatePairIsRefusedBeforeAnythingIsWritten(t *testing.T)
 	}
 }
 
+// Renewal begins thirty days out and retries every fifteen minutes, so a host
+// whose port 80 closed months ago looks exactly like a working one until the
+// morning the certificate expires. The authority's warning is the only thing
+// that reaches somebody who is not already looking, and it needs an address.
+func TestAnInstallationWithNobodyToWarnAboutExpiryIsToldSo(t *testing.T) {
+	t.Parallel()
+
+	for name, email := range map[string]string{
+		"with no contact": "",
+		"with a contact":  "operator@example.com",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newInstallHost(t)
+			h.inst.cfg.domain = installDomain
+			h.inst.cfg.acmeEmail = email
+
+			if err := h.install(); err != nil {
+				t.Fatalf("install: %v", err)
+			}
+
+			warned := strings.Contains(h.stdout.String(), "--acme-email")
+			if want := email == ""; warned != want {
+				t.Errorf("warned about the missing contact = %v, want %v:\n%s",
+					warned, want, h.stdout.String())
+			}
+		})
+	}
+}
+
 func TestInstallationNamesWhoIssuedTheCertificateOnceItArrives(t *testing.T) {
 	t.Parallel()
 
