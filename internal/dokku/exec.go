@@ -115,18 +115,36 @@ func (c *ExecClient) Version(ctx context.Context) (string, error) {
 }
 
 // Apps implements [Client].
+//
+// `apps:list` takes no flags -- Dokku 0.38.7 answers `unknown flag: --quiet` and
+// exits 2 -- so the header it prints is dropped here instead. Dokku marks its own
+// narration with these prefixes on every command, and only names appear without
+// one, so this reads the list rather than trusting the line count.
 func (c *ExecClient) Apps(ctx context.Context) ([]string, error) {
-	out, err := c.run(ctx, "apps:list", "--quiet")
+	out, err := c.run(ctx, "apps:list")
 	if err != nil {
 		return nil, err
 	}
 	var apps []string
 	for _, line := range strings.Split(string(out), "\n") {
-		if name := strings.TrimSpace(line); name != "" {
-			apps = append(apps, name)
+		name := strings.TrimSpace(line)
+		if name == "" || isDokkuNarration(name) {
+			continue
 		}
+		apps = append(apps, name)
 	}
 	return apps, nil
+}
+
+// isDokkuNarration reports whether a line is Dokku talking to a person rather
+// than answering the question.
+func isDokkuNarration(line string) bool {
+	for _, prefix := range []string{"=====>", "----->", "!", "NOTE:", "WARN:"} {
+		if strings.HasPrefix(line, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // AppReport implements [Client].
