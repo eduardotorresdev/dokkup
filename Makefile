@@ -136,6 +136,12 @@ test: ## Go tests against the in-memory Dokku fake -- no container needed
 test-integration: devenv-up ## Tests against the real Dokku in the dev environment
 	go test -race -tags=integration -count=1 ./...
 
+##@ Release
+
+.PHONY: release-preview
+release-preview: ## Show the version and notes the next merge to main would publish
+	@scripts/prepare-release.sh --dry-run
+
 ##@ Development environment
 
 .PHONY: devenv-build

@@ -49,7 +49,7 @@ func newRepo(t *testing.T) string {
 		{"config", "user.email", "test@example.invalid"},
 		{"config", "user.name", "Test"},
 	} {
-		cmd := exec.Command("git", args...)
+		cmd := exec.CommandContext(t.Context(), "git", args...)
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
@@ -106,7 +106,7 @@ func tag(t *testing.T, dir, name string) {
 func git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 
-	cmd := exec.Command("git", args...)
+	cmd := exec.CommandContext(t.Context(), "git", args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -130,7 +130,7 @@ func run(t *testing.T, dir string, args ...string) result {
 	outputFile := filepath.Join(t.TempDir(), "github-output")
 	notesFile := filepath.Join(t.TempDir(), "release-notes.md")
 
-	cmd := exec.Command(scriptPath(t), append([]string{"--notes-file", notesFile}, args...)...)
+	cmd := exec.CommandContext(t.Context(), scriptPath(t), append([]string{"--notes-file", notesFile}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
 		"GITHUB_OUTPUT="+outputFile,
@@ -299,6 +299,119 @@ func TestABreakingChangeStaysBelowOneWhileTheMajorIsZero(t *testing.T) {
 	res.requireRelease(t, "v0.4.0")
 	if !strings.Contains(res.stderr, "while the major is 0") {
 		t.Errorf("the clamp was not explained on stderr: %q", res.stderr)
+	}
+}
+
+// The one case where the version rules and the changelog rules disagree.
+//
+// `chore`, `ci` and `test` are excluded from the notes as housekeeping, but a
+// breaking change bumps the version whatever its type. Left alone, a cycle whose
+// only releasable commit was `chore!:` would publish a version with an empty
+// changelog section and release notes that explain nothing -- which is worse
+// than either publishing nothing or publishing a line.
+func TestABreakingHousekeepingCommitIsStillWrittenDown(t *testing.T) {
+	t.Parallel()
+
+	for _, header := range []string{
+		"chore!: drop support for the old data directory",
+		"ci!: require a signed tag",
+		"test!: remove the compatibility fixtures",
+	} {
+		t.Run(header, func(t *testing.T) {
+			t.Parallel()
+
+			dir := newRepo(t)
+			tag(t, dir, "v0.3.1")
+			commit(t, dir, header)
+
+			res := run(t, dir)
+
+			res.requireRelease(t, "v0.4.0")
+
+			_, description, _ := strings.Cut(header, ": ")
+			if !strings.Contains(res.notes, description) {
+				t.Errorf("the release that this commit caused does not mention it:\n%s", res.notes)
+			}
+		})
+	}
+}
+
+// Releasing a tag that already exists must publish the prose the file already
+// carries.
+//
+// This is the recovery path in CONTRIBUTING: a tag pushed while goreleaser then
+// failed, re-pushed by hand. Regenerating the notes from commit subjects there
+// would make the release page disagree with CHANGELOG.md about the same version,
+// and would list the bot's own `chore(release):` commit as a change.
+func TestTheNotesForATagAlreadyCutComeBackOutOfTheFile(t *testing.T) {
+	t.Parallel()
+
+	dir := newRepo(t)
+	tag(t, dir, "v0.3.1")
+	commit(t, dir, "feat(apps): scale process types")
+	commit(t, dir, "fix(dokku): quote app names")
+
+	// Cut it, which writes the section into CHANGELOG.md.
+	first := run(t, dir)
+	first.requireRelease(t, "v0.4.0")
+
+	// Now ask for that same section back, the way the tag path does.
+	again := run(t, dir, "--notes-for", "v0.4.0")
+
+	if again.exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0: %s", again.exitCode, again.stderr)
+	}
+	if again.notes != first.notes {
+		t.Errorf("the notes for a re-released tag differ from the ones it was cut with:\n"+
+			"cut with:\n%s\nread back:\n%s", first.notes, again.notes)
+	}
+	if !strings.Contains(again.outputs["notes_arg"], "--release-notes=") {
+		t.Errorf("notes_arg = %q, so goreleaser would generate its own notes instead",
+			again.outputs["notes_arg"])
+	}
+	// It must not have tried to work out a version, or it would refuse: v0.4.0
+	// exists by now.
+	if again.outputs["tag"] != "" {
+		t.Errorf("--notes-for computed a version (%q); it exists to read, not to decide",
+			again.outputs["tag"])
+	}
+}
+
+// Publishing empty notes because a section was missing would be worse than
+// failing: the release page would silently say nothing about the release.
+func TestAskingForNotesThatWereNeverWrittenFails(t *testing.T) {
+	t.Parallel()
+
+	dir := newRepo(t)
+	commit(t, dir, "feat: something")
+
+	res := run(t, dir, "--notes-for", "v9.9.9")
+
+	if res.exitCode == 0 {
+		t.Fatalf("a tag with no changelog section was reported as fine: %s", res.stderr)
+	}
+	if !strings.Contains(res.stderr, "no section") {
+		t.Errorf("stderr does not say what was missing: %q", res.stderr)
+	}
+}
+
+// The other half: housekeeping that breaks nothing still releases nothing, so
+// the rule above cannot be mistaken for "chore now counts".
+func TestOrdinaryHousekeepingStillReleasesNothing(t *testing.T) {
+	t.Parallel()
+
+	dir := newRepo(t)
+	tag(t, dir, "v0.3.1")
+	commit(t, dir, "chore: tidy the makefile")
+	commit(t, dir, "ci: bump the runner image")
+
+	res := run(t, dir)
+
+	if res.exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0: housekeeping is not a failure", res.exitCode)
+	}
+	if res.outputs["release"] != "false" {
+		t.Errorf("release = %q, want false", res.outputs["release"])
 	}
 }
 

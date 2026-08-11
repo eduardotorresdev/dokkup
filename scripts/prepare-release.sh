@@ -22,6 +22,7 @@ UNRELEASED_MARKER="## [Unreleased]"
 
 dry_run=false
 notes_file=""
+notes_for=""
 
 die() {
     printf 'prepare-release: %s\n' "$*" >&2
@@ -35,17 +36,28 @@ note() {
 usage() {
     cat >&2 <<'EOF'
 usage: scripts/prepare-release.sh [--dry-run] [--notes-file PATH]
+       scripts/prepare-release.sh --notes-for vX.Y.Z --notes-file PATH
 
   --dry-run          Print the plan and the diff; change nothing.
   --notes-file PATH  Also write the changelog section on its own, for
                      goreleaser --release-notes. Must be outside the repository:
                      inside it, it dirties the tree goreleaser is about to build.
+  --notes-for TAG    Do not work out a version. Read the section CHANGELOG.md
+                     already holds for TAG and write it to --notes-file. This is
+                     for releasing a tag that was cut earlier, so that the
+                     release page says what the file says.
 EOF
 }
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --dry-run) dry_run=true ;;
+        --notes-for)
+            shift
+            notes_for="${1:-}"
+            [ -n "$notes_for" ] || die "--notes-for needs a tag"
+            ;;
+        --notes-for=*) notes_for="${1#--notes-for=}" ;;
         --notes-file)
             shift
             notes_file="${1:-}"
@@ -70,6 +82,51 @@ cd "$root"
 [ -f "$CHANGELOG" ] || die "${CHANGELOG} not found"
 grep -qxF "$UNRELEASED_MARKER" "$CHANGELOG" \
     || die "${CHANGELOG} has no '${UNRELEASED_MARKER}' line; this script rebuilds the file around it"
+
+# ---------------------------------------------------------------------------
+# --notes-for: read back a section that was written by an earlier run
+# ---------------------------------------------------------------------------
+#
+# Releasing a tag that already exists -- the recovery path in CONTRIBUTING, where
+# a tag pushed but goreleaser then failed -- must publish the same prose the file
+# already carries. Without this the release page would be regenerated from commit
+# subjects and disagree with CHANGELOG.md about the very same version, and it
+# would list the bot's own `chore(release):` commit.
+if [ -n "$notes_for" ]; then
+    [ -n "$notes_file" ] || die "--notes-for needs --notes-file to write to"
+
+    # Stops at the next section, and also at the link-reference definitions the
+    # file ends with -- the newest section has no section after it, so without
+    # that second rule the notes would carry the whole footer.
+    want="## [${notes_for#v}]"
+    section=$(awk -v want="$want" '
+        index($0, want) == 1        { grabbing = 1; next }
+        grabbing && /^## \[/        { exit }
+        grabbing && /^\[[^]]+\]:[ ]/ { exit }
+        grabbing                    { print }
+    ' "$CHANGELOG")
+
+    # Trailing and leading blank lines come from the file's own spacing, not from
+    # the entry, and goreleaser reproduces the notes byte for byte.
+    section=$(printf '%s\n' "$section" | awk '
+        { line[NR] = $0 }
+        END {
+            first = 1; last = NR
+            while (first <= last && line[first] ~ /^[[:space:]]*$/) first++
+            while (last >= first && line[last] ~ /^[[:space:]]*$/) last--
+            for (i = first; i <= last; i++) print line[i]
+        }
+    ')
+
+    [ -n "$section" ] || die "${CHANGELOG} has no section for ${notes_for}, so there are no notes to publish for it"
+
+    printf '%s\n' "$section" >"$notes_file"
+    note "wrote the ${notes_for} section of ${CHANGELOG} to ${notes_file}"
+    if [ -n "${GITHUB_OUTPUT:-}" ]; then
+        printf 'notes_arg=--release-notes=%s\n' "$notes_file" >>"$GITHUB_OUTPUT"
+    fi
+    exit 0
+fi
 
 # Release dates are UTC. Overridable so that the tests can be deterministic.
 release_date="${RELEASE_DATE:-$(date -u +%F)}"
@@ -172,6 +229,16 @@ while IFS= read -r -d '' message; do
         entry="${entry}**${scope}:** "
     fi
     entry="${entry}${description}"
+
+    # A commit that moves the version has to appear in the notes, whatever its
+    # type says. `chore!:` is housekeeping that broke something, and dropping it
+    # would publish a release whose changelog section is empty and whose notes
+    # file explains nothing -- the one case where the exclusions below and the
+    # bump above disagree.
+    if [ "$breaking" = true ]; then
+        changed="${changed}${entry}"$'\n'
+        continue
+    fi
 
     case "$type" in
         feat) added="${added}${entry}"$'\n' ;;

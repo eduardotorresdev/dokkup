@@ -4,10 +4,21 @@ All notable changes to this project are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-Entries are generated from [Conventional Commits](https://www.conventionalcommits.org/)
-at release time.
+
+Released sections below are written by the release job from the
+[Conventional Commits](https://www.conventionalcommits.org/) in each cycle, and
+are the same text that appears on the release page. Editing one after the fact
+makes the two disagree. To say something the commit subjects cannot, write it
+under `## [Unreleased]` instead: whatever is there is published as-is, in place
+of the generated entries, and the section is emptied once it ships.
 
 ## [Unreleased]
+
+This is the first release, and it is a foundation rather than a product.
+`dokkup serve` and `dokkup update` do their jobs; `dokkup install` prints exactly
+what installing would do and then exits saying it is not built yet, so reaching a
+Dokku host still means placing the binary and the systemd unit by hand. The web
+interface reports whether Dokku is reachable and nothing more.
 
 ### Added
 
@@ -21,3 +32,14 @@ at release time.
   `serve` subcommands, the Dokku seam and its in-memory fake, and the
   client-rendered frontend embedded into the binary
 - Continuous integration, and a release pipeline producing signed binaries
+- Releases cut automatically from the Conventional Commits on every merge to
+  main, with the version, the changelog section and the release notes all
+  derived in the same pass, so the file and the release page cannot disagree;
+  `make release-preview` shows what the next merge would publish
+- `dokkup update`, which replaces the running binary with a newer one after
+  verifying its checksum and its cosign signature, restarts the service, and
+  puts the previous binary back if the new one does not answer as healthy on
+  the version just installed; `--check` reports whether an update exists and
+  changes nothing, so it is safe to run from cron
+
+[unreleased]: https://github.com/eduardotorresdev/dokkup/commits/main

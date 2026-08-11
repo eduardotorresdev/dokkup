@@ -6,7 +6,12 @@ before:
   hooks:
     # The frontend is built by the workflow before this runs; fail loudly rather
     # than shipping a binary with an empty interface embedded in it.
-    - sh -c 'test -f internal/server/static/dist/index.html || { echo "frontend not built: run make web" >&2; exit 1; }'
+    #
+    # Folded rather than plain: the message contains a colon and a space, and an
+    # unquoted YAML scalar containing those parses as a mapping, which goreleaser
+    # rejects as "cannot unmarshal !!map into string".
+    - >-
+      sh -c 'test -f internal/server/static/dist/index.html || { echo "frontend not built: run make web" >&2; exit 1; }'
     - go mod tidy
 
 builds:

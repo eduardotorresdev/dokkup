@@ -57,7 +57,7 @@ jobs:
 
       - name: gofmt
         run: |
-          unformatted=$(gofmt -s -l $(git ls-files '*.go'))
+          unformatted=$(git ls-files -z '*.go' | xargs -0 gofmt -s -l)
           if [ -n "$unformatted" ]; then
             echo "these files need 'make fmt':"
             echo "$unformatted"
@@ -138,5 +138,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Every tracked script, rather than a list someone has to remember to add
+      # to. install.sh and the release script are both run by people who did not
+      # write them, one as root.
       - name: shellcheck
-        run: shellcheck install.sh devenv/bootstrap-dokku.sh
+        run: git ls-files '*.sh' | xargs shellcheck

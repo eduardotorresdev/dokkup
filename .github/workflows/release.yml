@@ -1,7 +1,15 @@
 name: Release
 
+# Merging to main cuts the release. The version comes from the Conventional
+# Commits since the last tag, so a cycle that only tidies documentation quietly
+# publishes nothing, and one that fixes or adds something ships under a number
+# nobody had to choose.
+#
+# The tag trigger stays for cutting a release by hand: pushing vX.Y.Z from a
+# workstation runs this same job, minus the deriving and the tagging.
 on:
   push:
+    branches: [main]
     tags: ['v*']
 
 permissions:
@@ -11,12 +19,21 @@ permissions:
   # built by this repository rather than by someone claiming to be it.
   id-token: write
 
+# Two runs must never race to tag, and a cancelled one must not leave a tag
+# behind with no release against it.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
+    name: Release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          # The version is derived from the commits since the last tag, so the
+          # full history and every tag have to be here.
           fetch-depth: 0
 
       - uses: oven-sh/setup-bun@v2
@@ -33,12 +50,83 @@ jobs:
       - name: Build the frontend
         run: |
           bun install --frozen-lockfile
+          bun run check
           bun run build
         working-directory: web
 
-      - uses: goreleaser/goreleaser-action@v6
+      # What this job publishes becomes `releases/latest`, which is the URL
+      # install.sh downloads and the README tells people to run. ci.yml does not
+      # run on tags and never ran here, so without this gate a merge that broke
+      # the suite but still compiled would be signed and shipped as the version
+      # every new install gets. It sits after the frontend build because the Go
+      # binary embeds it, and before the tag because a tag is hard to withdraw.
+      - name: Test what is about to be released
+        run: |
+          go vet ./...
+          make tools
+          "$(go env GOPATH)/bin/golangci-lint" run ./...
+          go test -race -shuffle=on ./...
+          go mod tidy
+          # `--` matters: dokkup has no dependencies, so go.sum does not exist,
+          # and without it git rejects the argument instead of diffing nothing.
+          git diff --exit-code -- go.mod go.sum
+
+      # Writes CHANGELOG.md and the release notes; emits nothing when the cycle
+      # holds no feat: or fix:, which leaves every step below skipped and the
+      # run green. The notes go to RUNNER_TEMP because a file written inside the
+      # tree would dirty it for goreleaser, and one written into dist/ would be
+      # deleted by --clean.
+      - name: Work out the next version
+        id: prepare
+        if: github.ref_type == 'branch'
+        run: scripts/prepare-release.sh --notes-file "${RUNNER_TEMP}/release-notes.md"
+
+      # Releasing a tag that already exists -- pushed by hand, or re-pushed to
+      # recover a run whose goreleaser step failed after the tag went up. The
+      # section is read back out of CHANGELOG.md rather than regenerated, so the
+      # release page cannot disagree with the file about the same version.
+      - name: Read the notes this tag was released with
+        id: existing
+        if: github.ref_type == 'tag'
+        run: scripts/prepare-release.sh --notes-for "${GITHUB_REF_NAME}" --notes-file "${RUNNER_TEMP}/release-notes.md"
+
+      - name: Commit the changelog and tag it
+        if: steps.prepare.outputs.release == 'true'
+        env:
+          TAG: ${{ steps.prepare.outputs.tag }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add CHANGELOG.md
+          git commit -s -m "chore(release): ${TAG}"
+          git tag "${TAG}"
+
+          # Both refs or neither. A tag with no changelog commit behind it would
+          # release something main does not describe.
+          #
+          # This is rejected when someone merged while the tests ran, and that is
+          # not an error to retry: nothing is lost, because the version always
+          # derives from the last tag, so the run triggered by the commit that
+          # overtook this one covers the same range and publishes it. Retrying
+          # would ship artifacts built from a tree that no longer exists, and
+          # forcing would drop somebody's merge.
+          git push --atomic origin HEAD:refs/heads/main "refs/tags/${TAG}"
+
+      # Same job as the tagging on purpose: a tag pushed with GITHUB_TOKEN
+      # triggers no workflow run, so a separate tag-triggered job would never
+      # fire and the release would never be built.
+      - name: Build, sign and publish
+        if: github.ref_type == 'tag' || steps.prepare.outputs.release == 'true'
+        uses: goreleaser/goreleaser-action@v6
         with:
-          version: latest
-          args: release --clean
+          # Pinned to the major: install.sh depends on goreleaser's archive
+          # naming, and a major that renamed it would break every install with
+          # no pull request to catch it first.
+          version: '~> v2'
+          # Both paths publish the changelog section as the release notes: the
+          # one just written on the branch path, the one already in the file on
+          # the tag path. Only one of the two steps runs, so only one of these
+          # is ever non-empty.
+          args: release --clean ${{ steps.prepare.outputs.notes_arg }}${{ steps.existing.outputs.notes_arg }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
