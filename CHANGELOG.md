@@ -14,6 +14,8 @@ of the generated entries, and the section is emptied once it ships.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-11
+
 `dokkup install` and `dokkup uninstall` now do what they print. Installation
 creates the `dokkup` system user in the `dokku` group, writes a sudoers rule
 permitting exactly one program run as exactly one account and then proves that
@@ -79,5 +81,6 @@ interface reports whether Dokku is reachable and nothing more.
   the version just installed; `--check` reports whether an update exists and
   changes nothing, so it is safe to run from cron
 
-[unreleased]: https://github.com/eduardotorresdev/dokkup/compare/v0.1.0...HEAD
+[unreleased]: https://github.com/eduardotorresdev/dokkup/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/eduardotorresdev/dokkup/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/eduardotorresdev/dokkup/releases/tag/v0.1.0
