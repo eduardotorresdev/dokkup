@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/eduardotorresdev/dokkup/internal/dokku"
+	"github.com/eduardotorresdev/dokkup/internal/stubprog"
 )
 
 // stubDokku writes a stand-in for the dokku binary that records the argument
@@ -25,7 +26,7 @@ func stubDokku(t *testing.T, body string) (*dokku.ExecClient, func() string) {
 	log := filepath.Join(dir, "args")
 
 	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" + log + "'\ncat <<'DOKKU_EOF'\n" + body + "\nDOKKU_EOF\n"
-	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+	if err := stubprog.Write(binary, script); err != nil {
 		t.Fatalf("writing the stub: %v", err)
 	}
 
@@ -53,7 +54,7 @@ func stubProgram(t *testing.T, name, body string) (string, func() string) {
 	log := filepath.Join(dir, "args")
 
 	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" + log + "'\n" + body + "\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+	if err := stubprog.Write(path, script); err != nil {
 		t.Fatalf("writing the stub: %v", err)
 	}
 
@@ -131,7 +132,7 @@ func TestAHungDokkuIsGivenUpOn(t *testing.T) {
 
 	dir := t.TempDir()
 	binary := filepath.Join(dir, "dokku")
-	if err := os.WriteFile(binary, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+	if err := stubprog.Write(binary, "#!/bin/sh\nsleep 30\n"); err != nil {
 		t.Fatalf("writing the stub: %v", err)
 	}
 	client := &dokku.ExecClient{Binary: binary, Timeout: 100 * time.Millisecond}
