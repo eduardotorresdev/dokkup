@@ -68,7 +68,16 @@ func TestADownloadThatGoesQuietIsGivenUpOn(t *testing.T) {
 func TestASlowDownloadThatKeepsArrivingIsLeftAlone(t *testing.T) {
 	t.Parallel()
 
-	const chunks = 8
+	// Many small gaps rather than a few large ones, so that the whole transfer
+	// outlasts the timeout while no single gap comes near it. The two numbers
+	// have to satisfy both at once and the ratio between them is what keeps this
+	// test honest: a gap has to be twelve times its intended length before this
+	// fails, which is the difference between a test about the code and a test
+	// about how loaded the machine running it is.
+	const (
+		chunks = 20
+		gap    = 20 * time.Millisecond
+	)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		flusher, ok := w.(http.Flusher)
@@ -82,7 +91,7 @@ func TestASlowDownloadThatKeepsArrivingIsLeftAlone(t *testing.T) {
 			}
 			flusher.Flush()
 			select {
-			case <-time.After(20 * time.Millisecond):
+			case <-time.After(gap):
 			case <-r.Context().Done():
 				return
 			}
@@ -90,9 +99,9 @@ func TestASlowDownloadThatKeepsArrivingIsLeftAlone(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	// Shorter than the whole transfer, longer than any one gap in it. A total
-	// deadline of this length would fail; a stall timeout must not.
-	source := &Source{HTTP: srv.Client(), StallTimeout: 80 * time.Millisecond}
+	// Shorter than the whole transfer, far longer than any one gap in it. A
+	// total deadline of this length would fail; a stall timeout must not.
+	source := &Source{HTTP: srv.Client(), StallTimeout: 250 * time.Millisecond}
 
 	var sink []byte
 	if err := source.download(context.Background(), srv.URL, writerTo(&sink)); err != nil {

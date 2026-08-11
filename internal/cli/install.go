@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -71,21 +72,26 @@ const (
 	dnsTimeout = 5 * time.Second
 )
 
-// noCertificateForDomain is the refusal an operator gets for --domain without
-// one. It is a constant because it is the sentence that breaks a promise
-// ADR-0006 and the README made, and it should read the same wherever it is
-// quoted.
-const noCertificateForDomain = `dokkup cannot obtain a certificate for its own domain yet. Dokku's Let's
-Encrypt plugin issues certificates for apps, and dokkup is not an app: every
-one of its commands takes an app name and refuses anything else. Supply a
-certificate with --cert and --key, or install by IP address now and publish
-later`
+// certificateWaitTimeout bounds how long installation watches for the
+// certificate the service is getting.
+//
+// It is generous because what is being waited on is a stranger on the internet
+// making an HTTP request to this host, and the failures worth distinguishing --
+// a firewall on port 80, a name that resolves elsewhere -- look exactly like
+// slowness until they time out. Running out is not a failed installation: the
+// service goes on trying, and internal/acme retries every fifteen minutes.
+const certificateWaitTimeout = 90 * time.Second
 
 func runInstall(env Env, args []string) error {
 	fs := newFlagSet(env, "install")
-	domain := fs.String("domain", "", "publish dokkup at this domain (requires --cert and --key)")
-	cert := fs.String("cert", "", "certificate chain to serve at --domain, PEM")
+	domain := fs.String("domain", "", "publish dokkup at this domain")
+	cert := fs.String("cert", "", "certificate chain to serve at --domain, PEM; "+
+		"omit to have dokkup obtain one")
 	key := fs.String("key", "", "private key for --cert, PEM")
+	acmeEmail := fs.String("acme-email", "",
+		"contact address the certificate authority warns about expiry at")
+	acmeDirectory := fs.String("acme-directory", "",
+		"ACME directory URL; empty means Let's Encrypt")
 	ip := fs.String("ip", "", "address to serve at in IP mode (default: this host's own)")
 	selfSigned := fs.Bool("accept-self-signed", false,
 		"in IP mode, generate a self-signed certificate without asking")
@@ -99,10 +105,22 @@ func runInstall(env Env, args []string) error {
 		return err
 	}
 
+	cfg := installConfig{
+		domain:        *domain,
+		cert:          *cert,
+		key:           *key,
+		acmeEmail:     *acmeEmail,
+		acmeDirectory: *acmeDirectory,
+		ip:            *ip,
+		selfSigned:    *selfSigned,
+		plainHTTP:     *plainHTTP,
+		listen:        *listen,
+	}
+
 	// The plan is printed before the refusals below rather than after them, so
 	// that someone who runs `dokkup install` without sudo to find out what it
 	// would do gets the answer as well as the refusal.
-	printInstallPlan(env, *domain)
+	printInstallPlan(env, cfg)
 
 	if err := installPreflight(); err != nil {
 		return err
@@ -114,20 +132,12 @@ func runInstall(env Env, args []string) error {
 	}
 
 	inst := &installer{
-		env:     env,
-		ops:     host.NewTools(),
-		manager: service.NewSystemctl(),
-		self:    self,
-		version: env.Build.Version,
-		cfg: installConfig{
-			domain:     *domain,
-			cert:       *cert,
-			key:        *key,
-			ip:         *ip,
-			selfSigned: *selfSigned,
-			plainHTTP:  *plainHTTP,
-			listen:     *listen,
-		},
+		env:      env,
+		ops:      host.NewTools(),
+		manager:  service.NewSystemctl(),
+		self:     self,
+		version:  env.Build.Version,
+		cfg:      cfg,
 		timeout:  *timeout,
 		interval: healthPollInterval,
 		resolve:  resolveDomain,
@@ -169,13 +179,15 @@ func installPreflight() error {
 
 // installConfig is the flags, as given.
 type installConfig struct {
-	domain     string
-	cert       string
-	key        string
-	ip         string
-	selfSigned bool
-	plainHTTP  bool
-	listen     string
+	domain        string
+	cert          string
+	key           string
+	acmeEmail     string
+	acmeDirectory string
+	ip            string
+	selfSigned    bool
+	plainHTTP     bool
+	listen        string
 }
 
 // site is how this installation will be reached, resolved from the flags and
@@ -193,6 +205,10 @@ type site struct {
 	// fingerprint is set only for a certificate dokkup generated, which is the
 	// only one an operator has to check by eye.
 	fingerprint string
+
+	// manageCert says the certificate on disk is a placeholder and the service
+	// is to replace it with one from a certificate authority.
+	manageCert bool
 
 	// mode is what the unit tells the server about how it is reached.
 	mode server.Mode
@@ -244,6 +260,11 @@ type installer struct {
 	cfg      installConfig
 	timeout  time.Duration
 	interval time.Duration
+
+	// certWait bounds the watch for the certificate the service is getting.
+	// Zero means [certificateWaitTimeout]; it is a field for the reason timeout
+	// is one, which is that ninety seconds of a test is ninety seconds.
+	certWait time.Duration
 
 	// undo is what this run has changed, newest last. A step is appended only
 	// once the change it undoes has actually happened, and never for something
@@ -312,14 +333,105 @@ func (i *installer) change(ctx context.Context, s site) error {
 	if err := i.installUnit(ctx, s); err != nil {
 		return err
 	}
-	// The service is brought up and proved on its own loopback address before
-	// the proxy is reloaded, rather than the other way round. Both orders work;
-	// this one means that when the proxy check fails it is evidence about the
-	// proxy, because dokkup itself has already answered.
+	// nginx reads the new file before the service starts, rather than after.
+	//
+	// It has to be this way round for an installation that gets its own
+	// certificate: the service asks a certificate authority the moment it comes
+	// up, and the authority proves the name by fetching a token through this
+	// very vhost. Measured on the dev environment with the order reversed --
+	// the first attempt failed against Dokku's catch-all, which answers
+	// `return 444`, and the operator waited fifteen minutes for the retry on a
+	// host where nothing was actually wrong.
+	//
+	// What it costs is the moment between the reload and the service binding,
+	// where the proxy answers 502 to a request nobody has made yet.
+	if err := i.reloadProxy(ctx); err != nil {
+		return err
+	}
 	if err := i.startService(ctx); err != nil {
 		return err
 	}
-	return i.reloadProxy(ctx, s)
+	if err := i.confirmSite(ctx, s); err != nil {
+		return err
+	}
+
+	// After the proxy, and deliberately not part of it. The certificate
+	// authority reaches this host through nginx, so there is nothing to wait for
+	// until nginx is serving; and a certificate that does not arrive is not a
+	// failed installation, so this returns no error and unwinds nothing.
+	if s.manageCert {
+		i.awaitCertificate(ctx)
+	}
+	return nil
+}
+
+// awaitCertificate watches for the service to replace the placeholder.
+//
+// It reports rather than decides. Everything it is waiting on is outside this
+// host -- DNS, a firewall, a certificate authority's queue -- and an
+// installation that tore itself down over any of them would be undoing the
+// work that has to exist before the next attempt can succeed. So a run that
+// times out has still installed dokkup, and says exactly what is and is not
+// true.
+func (i *installer) awaitCertificate(ctx context.Context) {
+	printf(i.env.Stdout, "Waiting for a certificate for %s...\n", i.cfg.domain)
+
+	wait := i.certWait
+	if wait <= 0 {
+		wait = certificateWaitTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+
+	for {
+		if issuer, ok := i.issuedCertificate(); ok {
+			printf(i.env.Stdout, "%s issued a certificate for %s.\n", issuer, i.cfg.domain)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			printf(i.env.Stderr,
+				"\n  No certificate has arrived yet, and dokkup is serving a self-signed one\n"+
+					"  in the meantime, so a browser will warn. The service goes on trying every\n"+
+					"  fifteen minutes; `journalctl -u %s` says why each attempt failed.\n"+
+					"  The usual causes are port 80 closed to the internet, or %s\n"+
+					"  resolving somewhere other than this host.\n",
+				service.Name, i.cfg.domain)
+			return
+		case <-time.After(i.interval):
+		}
+	}
+}
+
+// issuedCertificate reports who signed the certificate on disk, and whether
+// anyone but this host did.
+//
+// Read off the file rather than from the service, because the file is what
+// nginx serves and what the operator is being told about. A self-signed
+// certificate is recognised by its own signature, exactly as [acme.Manager]
+// recognises it, so the two cannot disagree about whether the job is done.
+func (i *installer) issuedCertificate() (string, bool) {
+	certPEM, err := os.ReadFile(i.path(hostpaths.TLSCert))
+	if err != nil {
+		return "", false
+	}
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return "", false
+	}
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", false
+	}
+	if leaf.CheckSignatureFrom(leaf) == nil {
+		return "", false
+	}
+
+	issuer := leaf.Issuer.CommonName
+	if len(leaf.Issuer.Organization) > 0 {
+		issuer = leaf.Issuer.Organization[0]
+	}
+	return issuer, true
 }
 
 // requireDokku refuses a host that does not have Dokku on it.
@@ -365,8 +477,12 @@ func (i *installer) resolveSite(ctx context.Context) (site, error) {
 }
 
 func (i *installer) resolveDomainSite(ctx context.Context) (site, error) {
-	if i.cfg.cert == "" || i.cfg.key == "" {
-		return site{}, errors.New(noCertificateForDomain)
+	switch {
+	case i.cfg.cert == "" && i.cfg.key == "":
+		return i.resolveManagedDomainSite(ctx)
+	case i.cfg.cert == "" || i.cfg.key == "":
+		return site{}, errors.New("--cert and --key go together: pass both to serve a " +
+			"certificate you have, or neither to have dokkup obtain one")
 	}
 
 	//nolint:gosec // the operator names the certificate they want installed
@@ -408,6 +524,42 @@ func (i *installer) resolveDomainSite(ctx context.Context) (site, error) {
 		keyPEM:  keyPEM,
 		mode:    server.ModePublished,
 		url:     "https://" + i.cfg.domain + "/",
+	}, nil
+}
+
+// resolveManagedDomainSite is `--domain` with no certificate supplied: dokkup
+// gets its own.
+//
+// What it puts on disk is a placeholder, and that is the whole shape of the
+// thing. The certificate cannot be obtained before the service is running,
+// because a certificate authority proves this host answers for the name by
+// fetching a token from it over port 80; and nginx will not load a `listen 443
+// ssl` block whose certificate file is missing. So installation writes a
+// self-signed certificate, starts the service, and the service replaces it.
+// The paths never change, so nothing rewrites the vhost.
+//
+// The DNS check still runs, and here it earns much more than it did when the
+// operator supplied a certificate: a name that does not resolve cannot be
+// validated by anyone, so refusing now saves an installation that would have
+// spent ninety seconds failing.
+func (i *installer) resolveManagedDomainSite(ctx context.Context) (site, error) {
+	if err := i.checkDomainResolves(ctx, i.cfg.domain); err != nil {
+		return site{}, err
+	}
+
+	certPEM, keyPEM, err := proxy.SelfSignedForDomain(i.cfg.domain, time.Now().Add(certLifetime))
+	if err != nil {
+		return site{}, fmt.Errorf("making a certificate to serve until the real one arrives: %w", err)
+	}
+
+	return site{
+		how:        proxy.AtDomain,
+		domain:     i.cfg.domain,
+		certPEM:    certPEM,
+		keyPEM:     keyPEM,
+		manageCert: true,
+		mode:       server.ModePublished,
+		url:        "https://" + i.cfg.domain + "/",
 	}, nil
 }
 
@@ -712,13 +864,28 @@ func (i *installer) ensureSudoers(ctx context.Context) error {
 		return fmt.Errorf("reading the rule already at %s: %w", hostpaths.Sudoers, err)
 	}
 
-	// One program, run as one account. The runas is the dokku user and not
-	// root, so the ceiling on what this rule can escalate to is that account
-	// rather than the whole host. Both constants are the ones the service
-	// itself invokes through, so the rule cannot come to permit something other
-	// than what is run.
-	rule := fmt.Sprintf("%s ALL=(%s) NOPASSWD: %s\n",
-		hostpaths.User, dokku.DefaultRunAs, dokku.DefaultBinary)
+	// Two lines, and each names one program with its arguments.
+	//
+	// The first runs as the dokku user rather than root, so the ceiling on what
+	// it can escalate to is that account rather than the whole host, and both
+	// constants in it are the ones the service itself invokes through, so the
+	// rule cannot come to permit something other than what is run.
+	//
+	// The second is the reload a renewed certificate needs, because nginx reads
+	// certificates once, at load. It is already redundant on a stock Dokku host
+	// -- Dokku's own /etc/sudoers.d/dokku-nginx grants the dokku group
+	// `systemctl {enable,disable,reload,start,stop} nginx` and `nginx -t`, and
+	// dokkup is in that group, measured with `sudo -l -U dokkup` -- and it is
+	// written anyway, because a renewal that silently depends on the contents
+	// of a file dokkup does not own would stop working on the day Dokku changes
+	// it, ninety days before anyone found out.
+	//
+	// sudo matches arguments exactly, so this permits `systemctl reload nginx`
+	// and no other verb and no other unit: measured, `systemctl reload ssh`
+	// under this rule alone answers `sudo: a password is required`.
+	rule := fmt.Sprintf("%s ALL=(%s) NOPASSWD: %s\n%s ALL=(root) NOPASSWD: %s reload %s\n",
+		hostpaths.User, dokku.DefaultRunAs, dokku.DefaultBinary,
+		hostpaths.User, service.DefaultBinary, nginxUnit)
 
 	if err := i.ops.WriteSudoers(ctx, path, rule); err != nil {
 		return err
@@ -888,7 +1055,14 @@ func (i *installer) vhostRestorer(target string, previous []byte, had bool) func
 }
 
 func (i *installer) installUnit(ctx context.Context, s site) error {
-	unit := service.UnitFile(service.UnitConfig{Listen: i.cfg.listen, Mode: string(s.mode)})
+	unit := service.UnitFile(service.UnitConfig{
+		Listen:            i.cfg.listen,
+		Mode:              string(s.mode),
+		Domain:            s.domain,
+		ManageCertificate: s.manageCert,
+		ACMEEmail:         i.cfg.acmeEmail,
+		ACMEDirectory:     i.cfg.acmeDirectory,
+	})
 
 	restore, err := i.writeOwnedFile(i.path(hostpaths.Unit), []byte(unit), readableMode, "unit")
 	if err != nil {
@@ -910,17 +1084,45 @@ func (i *installer) installUnit(ctx context.Context, s site) error {
 	return nil
 }
 
+// startService brings the unit up, and brings it up again if it was already.
+//
+// `systemctl enable --now` starts a stopped unit and leaves a running one
+// exactly as it was, so on a host that already has dokkup on it this alone
+// would leave the previous process serving -- the previous binary, the previous
+// domain, the previous flags -- while every check in this file passed, because
+// the health endpoint answers with a version that has not changed either.
+// Measured on the dev environment: re-installing with --manage-certificate left
+// a service running without it, and the certificate never came.
 func (i *installer) startService(ctx context.Context) error {
+	running, err := i.manager.IsActive(ctx)
+	if err != nil {
+		return fmt.Errorf("asking whether %s is already running: %w", service.Name, err)
+	}
+
 	if err := i.manager.Enable(ctx); err != nil {
 		return fmt.Errorf("enabling %s: %w", service.Name, err)
 	}
 	i.undoing("stopping and disabling "+service.Name, i.manager.Disable)
 
+	if running {
+		if err := i.manager.Restart(ctx); err != nil {
+			return fmt.Errorf("restarting %s onto what was just installed: %w", service.Name, err)
+		}
+	}
+
 	printf(i.env.Stdout, "Waiting for %s to answer...\n", service.Name)
 	return waitHealthy(ctx, i.health, i.version, i.timeout, i.interval)
 }
 
-// reloadProxy asks nginx to read the new file, and then goes and looks.
+// reloadProxy asks nginx to read the new file.
+func (i *installer) reloadProxy(ctx context.Context) error {
+	if err := i.manager.Reload(ctx, nginxUnit); err != nil {
+		return fmt.Errorf("asking nginx to read %s: %w", hostpaths.Vhost, err)
+	}
+	return nil
+}
+
+// confirmSite goes and looks, rather than believing the reload's exit status.
 //
 // Looking is not belt and braces. `systemctl reload nginx` returns before the
 // new configuration is answering, so a reload reported on its exit status is
@@ -928,11 +1130,7 @@ func (i *installer) startService(ctx context.Context) error {
 // Dokku app which already claims dokkup's domain: dokku.conf sorts before
 // dokkup.conf, nginx emits a warning rather than an error, `nginx -t` still
 // exits 0, and the app wins silently.
-func (i *installer) reloadProxy(ctx context.Context, s site) error {
-	if err := i.manager.Reload(ctx, nginxUnit); err != nil {
-		return fmt.Errorf("asking nginx to read %s: %w", hostpaths.Vhost, err)
-	}
-
+func (i *installer) confirmSite(ctx context.Context, s site) error {
 	if err := i.confirmProxy(ctx, s); err != nil {
 		if s.how == proxy.AtDomain {
 			return fmt.Errorf("dokkup is running, but %s does not reach it through nginx; a "+
@@ -979,6 +1177,12 @@ func (i *installer) report(s site) {
 		printf(i.env.Stdout, "  because no certificate authority can vouch for an address. Check\n")
 		printf(i.env.Stdout, "  that it shows this fingerprint before going past the warning:\n\n")
 		printf(i.env.Stdout, "    %s\n\n", s.fingerprint)
+	}
+	if s.manageCert {
+		printf(i.env.Stdout, "  dokkup holds this certificate itself and renews it thirty days before\n")
+		printf(i.env.Stdout, "  it expires, so nothing here is on a calendar. Renewal needs %s\n", i.cfg.domain)
+		printf(i.env.Stdout, "  to keep reaching this host on port 80; a certificate authority checks\n")
+		printf(i.env.Stdout, "  that every time, not only the first.\n\n")
 	}
 	if s.how == proxy.AtIPPlain {
 		printf(i.env.Stdout, "  This is plain HTTP. Anyone who can see the network between you and\n")
@@ -1232,7 +1436,14 @@ func verifyFingerprint(want string) func(tls.ConnectionState) error {
 // printInstallPlan states what installation will do. It is printed before
 // anything happens, and it names the same locations the uninstaller reads from
 // hostpaths, so the two cannot drift apart.
-func printInstallPlan(env Env, domain string) {
+//
+// The two ways of installing at a domain differ in what they will do to this
+// host -- one serves a file, the other talks to a certificate authority on the
+// operator's behalf and goes on doing so every sixty days -- so the plan says
+// which, and names the authority it will be talking to.
+func printInstallPlan(env Env, cfg installConfig) {
+	domain := cfg.domain
+	ownCertificate := cfg.cert != "" || cfg.key != ""
 	printf(env.Stdout, "dokkup install will:\n\n")
 
 	printf(env.Stdout, "  Create the system user %q in the %q group, with a sudoers rule\n",
@@ -1249,11 +1460,22 @@ func printInstallPlan(env Env, domain string) {
 	printf(env.Stdout, "  if it has one: other apps depend on it for certificate renewal, and it\n")
 	printf(env.Stdout, "  issues certificates for apps rather than for dokkup.\n\n")
 
-	if domain != "" {
+	switch {
+	case domain != "" && ownCertificate:
 		printf(env.Stdout, "  Serve dokkup at %s with the certificate you supply with --cert and\n", domain)
-		printf(env.Stdout, "  --key. If the name does not resolve to this host you will be told, and\n")
-		printf(env.Stdout, "  asked whether to continue.\n\n")
-	} else {
+		printf(env.Stdout, "  --key, and renew nothing: that certificate is yours to replace. If the\n")
+		printf(env.Stdout, "  name does not resolve to this host you will be told, and asked whether\n")
+		printf(env.Stdout, "  to continue.\n\n")
+	case domain != "":
+		printf(env.Stdout, "  Serve dokkup at %s, and get a certificate for it from %s.\n",
+			domain, certificateAuthority(cfg.acmeDirectory))
+		printf(env.Stdout, "  That means agreeing to their subscriber agreement on your behalf, and\n")
+		printf(env.Stdout, "  it means %s must reach this host on port 80 from the internet:\n", domain)
+		printf(env.Stdout, "  that is how a certificate authority proves the name is yours. dokkup\n")
+		printf(env.Stdout, "  serves a self-signed certificate until the real one arrives, and\n")
+		printf(env.Stdout, "  renews from then on, thirty days before expiry. Pass --cert and --key\n")
+		printf(env.Stdout, "  instead to serve one you already have.\n\n")
+	default:
 		printf(env.Stdout, "  Serve dokkup at this host's IP address. No certificate authority will\n")
 		printf(env.Stdout, "  vouch for an address, so you will be offered a self-signed certificate\n")
 		printf(env.Stdout, "  and shown its fingerprint to check in the browser. It is served on\n")
@@ -1267,6 +1489,16 @@ func printInstallPlan(env Env, domain string) {
 	printf(env.Stdout, "  a single-use token, which this version does not issue yet: when it does,\n")
 	printf(env.Stdout, "  the installer prints one here and 'dokkup setup-token' reissues it while\n")
 	printf(env.Stdout, "  no owner exists.\n\n")
+}
+
+// certificateAuthority names who will be issuing, for a plan that has to be
+// true of the run it is describing. An operator who pointed --acme-directory
+// somewhere else must not be told this host is about to talk to Let's Encrypt.
+func certificateAuthority(directory string) string {
+	if directory == "" {
+		return "Let's Encrypt"
+	}
+	return directory
 }
 
 func runPublish(env Env, args []string) error {

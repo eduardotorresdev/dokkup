@@ -18,6 +18,7 @@ package proxy
 import (
 	"fmt"
 
+	"github.com/eduardotorresdev/dokkup/internal/acme"
 	"github.com/eduardotorresdev/dokkup/internal/service"
 )
 
@@ -128,11 +129,29 @@ map $http_upgrade $dokkup_connection_upgrade {
 `
 
 // domainServers is the published form: the redirect, then the TLS server.
+//
+// The port-80 block is not only a redirect. It also carries the one path a
+// certificate authority fetches to prove this host answers for the name, and
+// that path must not be redirected: an HTTP-01 validation follows no scheme
+// change, so a block that sent everything to https:// would fail every
+// validation -- including the first one, when the only certificate on disk is
+// the self-signed placeholder the authority would then refuse.
+//
+// `^~` rather than a plain prefix. Longest-prefix already wins between these
+// two, so the marker changes nothing today; it is there because it also stops
+// any regex location a later version adds from silently taking the path back,
+// and a certificate that stops renewing fails ninety days after the change that
+// broke it.
 const domainServers = `
 server {
     listen      80;
     listen      [::]:80;
     server_name %[1]s;
+
+    location ^~ %[4]s {
+        proxy_pass http://%[5]s;
+        proxy_set_header Host $http_host;
+    }
 
     location / { return 301 https://$host$request_uri; }
 }
@@ -261,7 +280,8 @@ func VhostFile(cfg VhostConfig) string {
 		// empty server_name, which `nginx -t` refuses -- which is the right way
 		// round, because the alternative is a file nginx accepts and that
 		// serves nothing.
-		servers = fmt.Sprintf(domainServers, cfg.Domain, certPath, keyPath)
+		servers = fmt.Sprintf(domainServers, cfg.Domain, certPath, keyPath,
+			acme.ChallengePath, listen)
 	}
 
 	return vhostHeader + servers + fmt.Sprintf(proxyBody, listen)

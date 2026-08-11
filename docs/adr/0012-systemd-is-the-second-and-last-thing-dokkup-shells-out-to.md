@@ -132,3 +132,32 @@ is untouched by a third seam while it would have been destroyed by scattering
 `exec.Command` through `internal/cli` in order to keep the number at two. The
 rule that replaces the count: a new family of subprocesses needs a seam of its
 own and a decision recorded, on the same terms as ADR-0003.
+
+## Amended: the running service reloads nginx too, and does it through sudo
+
+Everything above assumes `systemctl` is invoked by a root command — install,
+update, uninstall. The service invokes it as well, because it renews its own
+certificate (ADR-0006) and nginx reads certificates once, at load. `Systemctl`
+therefore has a `Sudo` field: empty invokes `systemctl` directly, which is what
+the root commands do, and set prefixes `sudo -n`. Only `-n`, so a host missing
+the rule fails immediately with `sudo: a password is required` rather than
+blocking a service that has no terminal to be asked on.
+
+What permits it is a second line in dokkup's own sudoers file: `dokkup
+ALL=(root) NOPASSWD: /usr/bin/systemctl reload nginx`. It does run as root,
+unlike the first line, and what bounds it instead is that sudo matches arguments
+exactly — measured, `systemctl reload ssh` under that rule alone answers `sudo: a
+password is required`.
+
+The line is already redundant on a stock Dokku host, and is written anyway.
+Dokku installs `/etc/sudoers.d/dokku-nginx` granting the `dokku` group
+`systemctl {enable,disable,reload,start,stop} nginx` and `nginx -t`, and dokkup
+joins that group for its filesystem reach into `DOKKU_ROOT` — measured with `sudo
+-l -U dokkup`. Inheriting the reload from there would make dokkup's renewals
+depend on the contents of a file dokkup does not own and did not write, and it
+would stop working on the day Dokku changed it, ninety days before anybody found
+out.
+
+This corrects something in the pull request for #12, which said the escalation
+ceiling installation writes is "one program, one account". It was one program and
+one account then; it is two lines now, and the second one reaches root.

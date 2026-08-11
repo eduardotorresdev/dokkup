@@ -57,7 +57,37 @@ func SelfSigned(ip net.IP, notAfter time.Time) (certPEM, keyPEM []byte, fingerpr
 	if ip == nil {
 		return nil, nil, "", errors.New("no address to make a certificate for")
 	}
+	return selfSigned(ip.String(), []net.IP{ip}, nil, notAfter)
+}
 
+// SelfSignedForDomain generates the certificate nginx serves while dokkup is
+// still getting a real one.
+//
+// It exists because of an ordering problem with no other answer. nginx will not
+// load a `listen 443 ssl` server block whose certificate file is missing --
+// `nginx -t` fails and, under nginx.service's ExecStartPre, that is a refusal to
+// start rather than a failed reload -- but the certificate cannot be obtained
+// before dokkup is running, because the certificate authority proves this host
+// answers for the name by fetching a token from it over port 80. So installation
+// writes this, the service starts, [internal/acme] replaces it, and the file
+// paths never change so nothing is rewritten.
+//
+// A browser shown this one warns, and should: it vouches for nothing. It is on
+// disk for as long as one HTTP-01 exchange takes, and [acme.Manager] recognises
+// it by its own signature rather than by a marker, so an installation that could
+// not reach the certificate authority is left visibly unfinished rather than
+// quietly serving a certificate nobody can check.
+func SelfSignedForDomain(domain string, notAfter time.Time) (certPEM, keyPEM []byte, err error) {
+	if domain == "" {
+		return nil, nil, errors.New("no domain to make a certificate for")
+	}
+	certPEM, keyPEM, _, err = selfSigned(domain, nil, []string{domain}, notAfter)
+	return certPEM, keyPEM, err
+}
+
+func selfSigned(commonName string, ips []net.IP, names []string, notAfter time.Time) (
+	certPEM, keyPEM []byte, fingerprint string, err error,
+) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("generating a key: %w", err)
@@ -72,9 +102,10 @@ func SelfSigned(ip net.IP, notAfter time.Time) (certPEM, keyPEM []byte, fingerpr
 		SerialNumber: serial,
 		Subject: pkix.Name{
 			Organization: []string{"dokkup"},
-			CommonName:   ip.String(),
+			CommonName:   commonName,
 		},
-		IPAddresses:           []net.IP{ip},
+		IPAddresses:           ips,
+		DNSNames:              names,
 		NotBefore:             time.Now().Add(-clockSlack),
 		NotAfter:              notAfter,
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment | x509.KeyUsageCertSign,
