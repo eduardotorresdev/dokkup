@@ -84,6 +84,8 @@ func TestUpdateReplacesARunningDokkupAndUndoesOneThatDoesNotComeUp(t *testing.T)
 	host.serveReleases()
 
 	t.Run("the health endpoint reports which dokkup is running", func(t *testing.T) {
+		host := host.with(t)
+
 		if got := host.servingVersion(); got != fromVersion {
 			t.Fatalf("health reports %q, want %q", got, fromVersion)
 		}
@@ -95,6 +97,8 @@ func TestUpdateReplacesARunningDokkupAndUndoesOneThatDoesNotComeUp(t *testing.T)
 	// host. Asking the service to list apps is what makes such a mistake fail
 	// here rather than in production. See ADR-0012.
 	t.Run("the service can actually reach Dokku through the unit", func(t *testing.T) {
+		host := host.with(t)
+
 		status, apps := host.dokkuThroughService()
 
 		if status != "ok" {
@@ -107,6 +111,8 @@ func TestUpdateReplacesARunningDokkupAndUndoesOneThatDoesNotComeUp(t *testing.T)
 	})
 
 	t.Run("check reports the newer version and changes nothing", func(t *testing.T) {
+		host := host.with(t)
+
 		before := host.installedSum()
 
 		stdout, _, code := host.dokkup("update", "--check")
@@ -126,6 +132,8 @@ func TestUpdateReplacesARunningDokkupAndUndoesOneThatDoesNotComeUp(t *testing.T)
 	})
 
 	t.Run("a download that does not match its checksum installs nothing", func(t *testing.T) {
+		host := host.with(t)
+
 		before := host.installedSum()
 		restore := host.corruptChecksums(toVersion)
 		defer restore()
@@ -149,6 +157,8 @@ func TestUpdateReplacesARunningDokkupAndUndoesOneThatDoesNotComeUp(t *testing.T)
 	})
 
 	t.Run("a verified update replaces the running binary and comes back healthy", func(t *testing.T) {
+		host := host.with(t)
+
 		stdout, stderr, code := host.dokkup("update", "--timeout", "30s")
 
 		if code != 0 {
@@ -172,6 +182,8 @@ func TestUpdateReplacesARunningDokkupAndUndoesOneThatDoesNotComeUp(t *testing.T)
 	})
 
 	t.Run("check then reports the host is up to date, still changing nothing", func(t *testing.T) {
+		host := host.with(t)
+
 		before := host.installedSum()
 
 		stdout, _, code := host.dokkup("update", "--check")
@@ -191,6 +203,8 @@ func TestUpdateReplacesARunningDokkupAndUndoesOneThatDoesNotComeUp(t *testing.T)
 	// verification, and then never answers must leave the host on the version
 	// that was working.
 	t.Run("a version that never comes up is rolled back", func(t *testing.T) {
+		host := host.with(t)
+
 		stdout, stderr, code := host.dokkup("update", "--version", brokenVersion, "--timeout", "15s")
 
 		if code != 4 {
@@ -249,6 +263,20 @@ func newDevenv(t *testing.T) *devenv {
 	t.Cleanup(host.teardown)
 
 	return host
+}
+
+// with returns this harness reporting against t.
+//
+// Every helper here fails through the testing.T it was built with, which is the
+// top-level test. A helper called from inside a subtest would therefore call
+// FailNow on that subtest's parent, which the runtime reports as "test executed
+// panic(nil) or runtime.Goexit: subtest may have called FailNow on a parent
+// test" -- an explanation of the test harness printed where the explanation of
+// the failure belongs. One line at the top of a subtest is what avoids it.
+func (d *devenv) with(t *testing.T) *devenv {
+	bound := *d
+	bound.t = t
+	return &bound
 }
 
 // exec runs a shell script inside the container and returns what it said.
@@ -406,56 +434,39 @@ func (d *devenv) corruptChecksums(version string) func() {
 	}
 }
 
-// install puts dokkup on the host the way installation will: the binary, the
-// service user, its data directory, and the unit rendered from the one
-// definition of it, so this test cannot drift from what gets installed.
+// inContainer is where the container sees a path from this repository, which is
+// bind-mounted at /workspace.
+func (d *devenv) inContainer(path string) string {
+	return filepath.Join("/workspace", strings.TrimPrefix(path, d.root+"/"))
+}
+
+// install puts dokkup on the host by running the real installer.
+//
+// It used to hand-roll the group, the user, its membership of dokku, the
+// sudoers rule, the data directory, the unit and the enable, and every one of
+// those lines was a second definition waiting to disagree with the first. The
+// rule it wrote was not the rule installation writes; an update proved against
+// it proved nothing about the host an operator actually has.
 func (d *devenv) install(version string) {
 	d.t.Helper()
 
-	unitPath := filepath.Join(d.staging, "dokkup.service")
-	d.write(unitPath, service.UnitFile(service.UnitConfig{}))
+	d.mustExec(fmt.Sprintf("install -m 0755 %s %s",
+		d.inContainer(d.built(version)), hostpaths.Binary))
 
-	inContainer := func(path string) string {
-		return filepath.Join("/workspace", strings.TrimPrefix(path, d.root+"/"))
-	}
+	// --ip 127.0.0.1 because how dokkup is reached is not what this test is
+	// about, and loopback is the one address the container has under both
+	// runtimes. --accept-self-signed is what makes it unattended: without it
+	// installation asks, and correctly refuses to choose for anyone.
+	//
+	// No wait for health afterwards. Installation does not return until the
+	// service has answered as this version and nginx has served it, so a wait
+	// here would be waiting for something that has already happened.
+	d.mustExec(hostpaths.Binary + " install --accept-self-signed --ip 127.0.0.1")
 
-	d.mustExec(strings.Join([]string{
-		"set -eu",
-		"groupadd -f " + hostpaths.Group,
-		fmt.Sprintf("id -u %s >/dev/null 2>&1 || useradd -r -g %s -s /usr/sbin/nologin -d %s %s",
-			hostpaths.User, hostpaths.Group, hostpaths.DataDir, hostpaths.User),
-		// The parts of installation that let dokkup reach Dokku at all. Without
-		// them the service answers 503 for a reason that has nothing to do with
-		// the update, and every sandbox in the unit could be wrong without this
-		// test noticing -- which is exactly how ProtectHome and
-		// ProtectSystem=strict survived in it. See ADR-0012.
-		fmt.Sprintf("usermod -aG %s %s", hostpaths.DokkuGroup, hostpaths.User),
-		fmt.Sprintf("printf '%s ALL=(ALL) NOPASSWD:SETENV: %s\\n' > %s",
-			hostpaths.User, dokku.DefaultBinary, hostpaths.Sudoers),
-		"chmod 0440 " + hostpaths.Sudoers,
-		// ProtectSystem=strict refuses to enter its namespace when a
-		// ReadWritePaths entry is missing, so the directory comes first.
-		"mkdir -p " + hostpaths.DataDir,
-		fmt.Sprintf("chown %s:%s %s", hostpaths.User, hostpaths.Group, hostpaths.DataDir),
-		fmt.Sprintf("install -m 0755 %s %s", inContainer(d.built(version)), hostpaths.Binary),
-		fmt.Sprintf("install -m 0644 %s %s", inContainer(unitPath), hostpaths.Unit),
-		"systemctl daemon-reload",
-		"systemctl reset-failed " + service.Name + " 2>/dev/null || true",
-		"systemctl enable " + service.Name,
-		// Restart rather than `enable --now`: a unit left active by an
-		// interrupted run would otherwise keep serving whichever binary it
-		// started with, and the test would compare against the wrong version.
-		"systemctl restart " + service.Name,
-		// An application to look for. On an empty host, "the service can see
-		// Dokku's state" is true of a sandbox that hides all of it.
-		fmt.Sprintf("%s apps:create %s >/dev/null 2>&1 || true", dokku.DefaultBinary, probeApp),
-	}, "\n"))
-
-	// Deliberately not `curl -f`. The devenv has no Dokku reachable from the
-	// dokkup user, so health correctly answers 503 degraded, and -f would read
-	// that as no answer at all. Any HTTP reply proves the service is up, which
-	// is the whole question here.
-	d.waitFor("the service to answer", "curl -sS -o /dev/null "+healthURL)
+	// An application to look for. On an empty host, "the service can see
+	// Dokku's state" is true of a sandbox that hides all of it.
+	d.mustExec(fmt.Sprintf("%s apps:create %s >/dev/null 2>&1 || true",
+		dokku.DefaultBinary, probeApp))
 }
 
 // serveReleases starts the fake release server inside the container, as a
@@ -511,6 +522,14 @@ func (d *devenv) healthField(name string) string {
 // has to be applied by hand because the answer needed is Dokku's app list, and
 // dokkup does not serve one yet -- the health endpoint only ever runs `dokku
 // version`, which succeeds under every sandbox that breaks everything else.
+//
+// Dokku is invoked through sudo, exactly as [dokku.ExecClient] invokes it, and
+// not as a bare `dokku`. The bare form no longer works for the service account
+// and must not: measured on this host against the rule installation writes,
+// `/usr/bin/dokku apps:list` as dokkup answers `sudo: sorry, you are not
+// allowed to preserve the environment`, because the dokku binary re-executes
+// itself as `sudo -u dokku -E -H` and the rule permits no SETENV. Under `-u
+// dokku` that guard is false and dokku runs directly.
 func (d *devenv) dokkuThroughService() (status, apps string) {
 	d.t.Helper()
 
@@ -531,8 +550,8 @@ func (d *devenv) dokkuThroughService() (status, apps string) {
 	}
 
 	out, stderr, code := d.exec(fmt.Sprintf(
-		"systemd-run --pipe --wait --quiet --collect %s %s apps:list",
-		strings.Join(props, " "), dokku.DefaultBinary))
+		"systemd-run --pipe --wait --quiet --collect %s %s -n -u %s %s apps:list",
+		strings.Join(props, " "), dokku.DefaultSudo, dokku.DefaultRunAs, dokku.DefaultBinary))
 	if code != 0 {
 		d.t.Fatalf("running dokku under the unit's sandbox failed (%d): %s%s", code, out, stderr)
 	}
@@ -565,6 +584,13 @@ func (d *devenv) teardown() {
 
 	_, _, _, err := d.execContext(ctx, strings.Join([]string{
 		"systemctl stop dokkup-test-release.service 2>/dev/null || true",
+		// The real removal first, because it is the one that knows what
+		// installation left. The host's name goes in on standard input because
+		// removal re-authenticates, and this shell has no terminal to be asked
+		// on. Everything after it is for a run that failed before installation
+		// finished, and on an ordinary run finds nothing.
+		fmt.Sprintf("printf '%%s\\n' \"$(hostname)\" | %s uninstall --purge >/dev/null 2>&1 || true",
+			hostpaths.Binary),
 		"systemctl disable --now " + service.Name + " 2>/dev/null || true",
 		"rm -f " + hostpaths.Unit,
 		"systemctl daemon-reload",
@@ -572,6 +598,13 @@ func (d *devenv) teardown() {
 		"rm -f " + hostpaths.Binary + " " + hostpaths.PreviousBinary,
 		"rm -f " + hostpaths.Sudoers,
 		"rm -rf " + hostpaths.DataDir,
+		// The vhost is the one piece of residue that would affect somebody else
+		// using this container. nginx reads every file in conf.d, so one left
+		// pointing at a service that no longer exists is a 502 for whoever comes
+		// next -- and it is only picked up at nginx's next start, which is why
+		// the proxy is told rather than left to find out at the next reboot.
+		"rm -f " + hostpaths.Vhost + " " + hostpaths.VhostStaging,
+		"nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true",
 		fmt.Sprintf("%s --force apps:destroy %s >/dev/null 2>&1 || true", dokku.DefaultBinary, probeApp),
 		"userdel " + hostpaths.User + " 2>/dev/null || true",
 		"groupdel " + hostpaths.Group + " 2>/dev/null || true",

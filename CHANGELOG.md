@@ -14,6 +14,41 @@ of the generated entries, and the section is emptied once it ships.
 
 ## [Unreleased]
 
+`dokkup install` and `dokkup uninstall` now do what they print. Installation
+creates the `dokkup` system user in the `dokku` group, writes a sudoers rule
+permitting exactly one program run as exactly one account and then proves that
+rule works before reporting success, makes a data directory no other
+unprivileged account on the host can even list, puts the binary and the systemd
+unit in place, writes one nginx server block, and waits until dokkup answers its
+own health endpoint as the version just installed — and answers it through nginx
+too, because `systemctl reload` returns before the new configuration is serving.
+Running it again changes nothing, and repairs a directory or a rule an earlier
+run left wrong. A run that fails part way undoes what that run changed and
+nothing it merely found, so a failed re-install cannot destroy a working one.
+
+Removal takes the same list back off, asks before deleting the data directory,
+and makes you authenticate again first: your own password, or this host's name
+when you are already root. A wrong answer removes nothing at all.
+It stops the service before removing the account that service runs as, and
+leaves your apps, your volumes, this host's Dokku plugins and Dokku itself as
+they were.
+
+Publishing at a domain now needs a certificate you supply — `--domain` together
+with `--cert` and `--key`. Dokku's Let's Encrypt plugin issues certificates for
+apps and dokkup is not an app, so dokkup cannot obtain one for its own name; for
+the same reason the installer no longer installs that plugin, and a host that
+has one keeps it and everything renewing through it. Reached at an address
+instead, dokkup serves HTTPS on port 8443, because 443 belongs to Dokku's own
+catch-all and that refuses connections arriving without a name. The self-signed
+certificate's fingerprint is printed in the form a browser shows it, so the
+warning can be checked rather than clicked through.
+
+The service now invokes Dokku as `sudo -n -u dokku`, which is the only form that
+works for an unprivileged account and is exactly what the sudoers rule permits;
+`dokkup serve --dokku-run-as` turns that hop off on a host set up differently.
+Creating the owner account still needs a single-use token, which this version
+does not issue yet — installation says so, where it will later print one.
+
 ## [0.1.0] - 2026-08-11
 
 This is the first release, and it is a foundation rather than a product.

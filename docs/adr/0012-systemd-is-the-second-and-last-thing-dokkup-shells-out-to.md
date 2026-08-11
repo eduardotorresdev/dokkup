@@ -83,3 +83,52 @@ adding one back breaks nothing else in the suite.
 The general rule this leaves behind: a hardening directive in this unit is a
 statement about Dokku as much as about dokkup, and cannot be adopted from a
 hardening guide without running Dokku under it first.
+
+## Amended: four more methods, because installing a unit is what needs them
+
+`Manager` has gained `DaemonReload`, `Enable`, `Disable` and `Reload(unit)`. The
+Consequences above name enabling a unit as a sign that this decision is being
+reopened, and the same paragraph says a method is added only when a feature
+needs it. Those point in different directions, and this is the answer:
+installation and removal are that feature, and the alternative was a second
+place in the tree that runs `systemctl`, which is the exact thing this ADR
+exists to prevent. So this is extending, not reopening.
+
+`Enable`, `Disable` and `DaemonReload` are what installing and removing a unit
+mean. systemd is otherwise still holding the text of a unit file that has just
+changed or gone, and `userdel` exits 8 while a process is still running as the
+account — measured on the development environment against a live unit, `userdel:
+user zz-probe-svc is currently used by process 342857` — so removal has to stop
+the service before it can remove the user it runs as. `Reload` is there because
+dokkup writes one file into Dokku's nginx and has to ask nginx to read it; it
+takes a unit name because the one caller reloads `nginx` rather than `dokkup`,
+and a seam that could not tell the two apart could reload the wrong service.
+
+`systemctl reload nginx` is the form, and both alternatives were rejected on
+measurement. `dokku nginx:reload` is exactly `nginx -t` followed by `systemctl
+reload nginx` and nothing else, so it would buy nothing while putting a
+host-wide action through the app-scoped `DokkuClient` seam. `nginx -s reload`
+signals the master process directly: it bypasses systemd and does not run
+`nginx -t` first, which is the check that stops a bad file becoming an outage.
+
+The rule that has not changed is that the package holds only `systemctl`, and
+that no method arrives without a feature that needs it, or without reaching the
+fake in the same change.
+
+## Amended: there is a third thing dokkup shells out to
+
+The title says "last" and the opening paragraph says "the intent is that there
+is never a third". There is a third. Installing dokkup means creating a system
+user, writing a sudoers rule and writing an nginx server block, which is
+`groupadd`, `useradd`, `usermod`, `userdel`, `groupdel`, `visudo`, `runuser`,
+`sudo` and `nginx` — none of them Dokku and none of them systemd. They live
+behind `internal/host`, and ADR-0013 is where that is argued, including why
+writing `/etc/passwd` directly is worse than shelling out and why two of those
+programs are validators that could not be replaced in any case.
+
+A count was the wrong shape of promise. What this ADR is protecting is that
+every process dokkup spawns can be found by reading one file, and that property
+is untouched by a third seam while it would have been destroyed by scattering
+`exec.Command` through `internal/cli` in order to keep the number at two. The
+rule that replaces the count: a new family of subprocesses needs a seam of its
+own and a decision recorded, on the same terms as ADR-0003.

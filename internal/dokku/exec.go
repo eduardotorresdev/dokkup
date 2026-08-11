@@ -13,6 +13,14 @@ import (
 // DefaultBinary is where Dokku installs its CLI.
 const DefaultBinary = "/usr/bin/dokku"
 
+// DefaultRunAs is the account Dokku is invoked as. The sudoers rule
+// installation writes permits exactly this: the dokku binary, run as dokku,
+// with no password. See docs/adr/0005-dedicated-system-user-not-root.md.
+const DefaultRunAs = "dokku"
+
+// DefaultSudo is where sudo lives.
+const DefaultSudo = "/usr/bin/sudo"
+
 // defaultTimeout bounds a single invocation. Dokku commands are short; one that
 // runs longer than this has hung, and a hung command must not hold an HTTP
 // request open indefinitely.
@@ -32,15 +40,53 @@ type ExecClient struct {
 	// Binary is the path to the dokku executable. Empty means [DefaultBinary].
 	Binary string
 
+	// RunAs is the account the Dokku binary is invoked as, through sudo. Empty
+	// invokes Binary directly, which is what a test with a stub binary wants
+	// and what nothing on a real host should use.
+	//
+	// The hop is not belt and braces on top of a working invocation; it is the
+	// only form that works at all. Bare `dokku` fails for the service user even
+	// with the sudoers rule and the group membership: /usr/bin/dokku re-execs
+	// itself as `sudo -u dokku -E -H "$0" "$@"` and sudo answers `sorry, you
+	// are not allowed to preserve the environment`. Under `-u dokku` that guard
+	// is false and dokku runs directly, with no second sudo.
+	//
+	// Measured on the devenv (Ubuntu 24.04, Dokku 0.38.7, sudo 1.9.15p5) as a
+	// throwaway account holding exactly the rule installation writes,
+	// `zzsudo ALL=(dokku) NOPASSWD: /usr/bin/dokku`:
+	//
+	//	sudo -n -u dokku /usr/bin/dokku version
+	//		exit 0, "dokku version 0.38.7"
+	//	/usr/bin/dokku version
+	//		exit 1, "sudo: sorry, you are not allowed to preserve the environment"
+	//	sudo -n -u dokku /bin/ls /
+	//		exit 1, "sudo: a password is required"
+	//	sudo -n /usr/bin/dokku version
+	//		exit 1, "sudo: a password is required"
+	//
+	// The last two are the rule doing its job rather than incidental: the
+	// account may run one program as one other account and nothing else, so the
+	// escalation ceiling is the dokku account rather than root.
+	RunAs string
+
+	// Sudo is the path to sudo. Empty means [DefaultSudo].
+	Sudo string
+
 	// Timeout bounds a single invocation. Zero means [defaultTimeout].
 	Timeout time.Duration
 }
 
 var _ Client = (*ExecClient)(nil)
 
-// NewExecClient returns a client invoking the Dokku binary at its usual path.
+// NewExecClient returns a client invoking the Dokku binary at its usual path,
+// as the account the sudoers rule names.
 func NewExecClient() *ExecClient {
-	return &ExecClient{Binary: DefaultBinary, Timeout: defaultTimeout}
+	return &ExecClient{
+		Binary:  DefaultBinary,
+		RunAs:   DefaultRunAs,
+		Sudo:    DefaultSudo,
+		Timeout: defaultTimeout,
+	}
 }
 
 // CommandError describes a Dokku invocation that failed.
@@ -70,11 +116,32 @@ func (c *ExecClient) run(ctx context.Context, args ...string) ([]byte, error) {
 		timeout = defaultTimeout
 	}
 
+	// When an account is named, the process dokkup starts is sudo and Dokku is
+	// what sudo starts. The two vectors are kept apart deliberately: what goes
+	// into a [CommandError] below is args, the Dokku command, and never the
+	// sudo one. An operator reading a failure wants to know which Dokku command
+	// failed; `-n -u dokku /usr/bin/dokku` in front of it is plumbing that is
+	// identical on every invocation and tells them nothing.
+	//
+	// `-n` is load-bearing. Without it, a host whose sudoers rule is missing or
+	// wrong gets a password prompt on a service that has no terminal to answer
+	// it on, and the invocation hangs until the timeout instead of failing with
+	// `sudo: a password is required`.
+	program, vector := binary, args
+	if c.RunAs != "" {
+		sudo := c.Sudo
+		if sudo == "" {
+			sudo = DefaultSudo
+		}
+		program = sudo
+		vector = append([]string{"-n", "-u", c.RunAs, binary}, args...)
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd := exec.CommandContext(ctx, program, vector...)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
