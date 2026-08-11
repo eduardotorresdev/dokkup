@@ -14,6 +14,8 @@ of the generated entries, and the section is emptied once it ships.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-11
+
 `dokkup install --domain` now gets its own certificate. Pass a name and an
 email, and dokkup obtains a certificate for it from Let's Encrypt and renews it
 thirty days before expiry, without a plugin and without a certificate file of
@@ -113,6 +115,7 @@ interface reports whether Dokku is reachable and nothing more.
   the version just installed; `--check` reports whether an update exists and
   changes nothing, so it is safe to run from cron
 
-[unreleased]: https://github.com/eduardotorresdev/dokkup/compare/v0.2.0...HEAD
+[unreleased]: https://github.com/eduardotorresdev/dokkup/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/eduardotorresdev/dokkup/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/eduardotorresdev/dokkup/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/eduardotorresdev/dokkup/releases/tag/v0.1.0
