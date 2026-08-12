@@ -124,13 +124,11 @@ func TestUninstallWithPurgeSaysTheDataDirectoryGoesWithoutAsking(t *testing.T) {
 func TestUnimplementedCommandsExitDistinctlyRatherThanLookingLikeSuccess(t *testing.T) {
 	t.Parallel()
 
-	// install and uninstall have left this list: they do their job now. The
-	// setup token has not, because the store it needs does not exist yet
-	// (#13, #14), and publishing has not either; leaving them here is how the
-	// suite records that both are still owed.
+	// install, uninstall and setup-token have left this list: they do their job
+	// now. Publishing has not, and leaving it here is how the suite records
+	// that it is still owed.
 	for name, args := range map[string][]string{
-		"setup-token": {"setup-token"},
-		"publish":     {"publish", "dokkup.example.com"},
+		"publish": {"publish", "dokkup.example.com"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

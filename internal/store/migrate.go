@@ -128,6 +128,39 @@ var migrations = []migration{
 			`CREATE INDEX audit_entries_recorded_at ON audit_entries (recorded_at DESC, id DESC)`,
 		},
 	},
+	{
+		version: 2,
+		name:    "setup tokens",
+		statements: []string{
+			// A Setup Token is what ADR-0007 puts between the installer and
+			// the Owner. It lives in a table of its own rather than as a
+			// column on an operator row, because the row it creates does not
+			// exist yet while the token does, and because a token is spent by
+			// deleting it -- a "used_at" column would leave a spent credential
+			// in the file forever and make every read of it a filter somebody
+			// can forget.
+			//
+			// token_hash, never the token, for the same reason sessions store
+			// a hash: a database that has been read must not be a database
+			// that can claim ownership of the host.
+			//
+			// It is the primary key, which is also the whole of the uniqueness
+			// this table needs. There is at most one live token by policy --
+			// [Store.IssueSetupToken] replaces the outstanding one -- and that
+			// policy belongs in the statement that writes, not in a constraint
+			// that would have to be dropped the day a second one is wanted.
+			//
+			// No foreign key anywhere: the token is deliberately not tied to
+			// an operator, an email address or an installation id. Whoever
+			// holds it becomes the Owner, and the only thing that limits that
+			// is the clock and the single spending.
+			`CREATE TABLE setup_tokens (
+				token_hash TEXT    PRIMARY KEY,
+				created_at INTEGER NOT NULL,
+				expires_at INTEGER NOT NULL
+			) STRICT`,
+		},
+	},
 }
 
 // migrate applies every migration this binary knows and the database has not.

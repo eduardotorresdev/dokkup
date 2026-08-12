@@ -477,7 +477,12 @@ func TestASessionThatHasRunOutAuthenticatesNobody(t *testing.T) {
 		t.Error("a session that had already expired was stored")
 	}
 
-	const brief = 40 * time.Millisecond
+	// Long enough that a loaded machine cannot spend the whole of it between
+	// storing the session and reading it back. At 40ms it could, and did: the
+	// whole suite under -race is enough load, and the failure reads as the
+	// store refusing a session that is still valid rather than as the clock
+	// having moved on.
+	const brief = 2 * time.Second
 	if _, err := s.StartSession(t.Context(), created.ID, hash("brief"), time.Now().Add(brief)); err != nil {
 		t.Fatalf("starting a brief session: %v", err)
 	}

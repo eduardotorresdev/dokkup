@@ -15,6 +15,7 @@ import (
 	"github.com/eduardotorresdev/dokkup/internal/hostpaths"
 	"github.com/eduardotorresdev/dokkup/internal/server"
 	"github.com/eduardotorresdev/dokkup/internal/service"
+	"github.com/eduardotorresdev/dokkup/internal/store"
 )
 
 // reloadProxyAsService asks nginx to read a certificate that has just been
@@ -70,6 +71,18 @@ func runServe(env Env, args []string) error {
 	acmeDirectory := fs.String("acme-directory", "",
 		"ACME directory URL; empty means Let's Encrypt")
 	tlsDir := fs.String("tls-dir", hostpaths.TLSDir, "where the certificate and its keys live")
+	// The server cannot work this out for itself: nginx terminates TLS in front
+	// of it, so what arrives is a plain HTTP request whether or not the browser
+	// spoke HTTPS. The flag exists because the session cookie's Secure flag
+	// depends on the answer, and it is off by default so that an installation
+	// which forgot to say anything gets the protected cookie.
+	plainHTTP := fs.Bool("plain-http", false,
+		"this host is reached over plain HTTP, so the session cookie must not be Secure")
+	// The default is the one place a dokkup service ever keeps its state, and
+	// the flag exists for the two cases that are not a service: `make dev` on a
+	// laptop that has no /var/lib/dokkup, and a second instance pointed at a
+	// copy of a database while debugging one.
+	dbPath := fs.String("db", hostpaths.DB, "the SQLite file holding dokkup's own state")
 
 	if err := parseFlags(fs, args); err != nil {
 		return err
@@ -96,17 +109,42 @@ func runServe(env Env, args []string) error {
 	client.Binary = *dokkuBinary
 	client.RunAs = *dokkuRunAs
 
+	// Established before anything is served, and before the listener exists, so
+	// that a signal arriving during a migration stops it rather than being
+	// swallowed by a startup that had not begun listening yet.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// Opening the database is what runs the migrations, so this is also where
+	// a schema change lands. Failing here is fatal on purpose: everything an
+	// operator can do with dokkup begins with signing in, and a server that
+	// cannot read its operators would come up looking healthy and refuse every
+	// single person -- including, once the Setup Token is redeemed, the one who
+	// owns the host. A running dokkup that nobody can use is worse than one
+	// that says why it did not start.
+	db, err := store.Open(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	// Closing is what checkpoints the write-ahead log back into the one file a
+	// backup is a copy of, so it runs on every way out of this function and not
+	// only on the graceful one.
+	defer func() {
+		if err := db.Close(); err != nil {
+			logger.Error("closing the database", "error", err)
+		}
+	}()
+
 	srv := server.New(server.Config{
-		Dokku:   client,
-		Mode:    server.Mode(*mode),
-		Version: env.Build.Version,
-		Logger:  logger,
+		Dokku:     client,
+		Mode:      server.Mode(*mode),
+		PlainHTTP: *plainHTTP,
+		Store:     db,
+		Version:   env.Build.Version,
+		Logger:    logger,
 	})
 
 	handler := srv.Handler()
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	if *manageCert {
 		certificates := &acme.Manager{

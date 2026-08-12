@@ -42,6 +42,11 @@ const (
 	installElsewhere = "198.51.100.9"
 
 	installDomain = "dokkup.example.com"
+
+	// installToken is what issuing produces on this host. Not a plausible
+	// token: a value nothing could mistake for a real one is what makes a test
+	// that finds it in the output unambiguous.
+	installToken = "the-token-this-installation-issued"
 )
 
 // installOps is [host.Fake] with two refinements, each needed to say
@@ -173,6 +178,13 @@ func newInstallHost(t *testing.T) *installHost {
 	h.inst.confirmProxy = func(_ context.Context, s site) error {
 		h.proved = s
 		return nil
+	}
+	// A field for the reason confirmProxy is one: a real issue opens a database
+	// and, as root, changes who owns it. Every test needs it set, because the
+	// last thing an installation does is issue -- so the default is a host
+	// where issuing works, and a test that is about the other case says so.
+	h.inst.issueToken = func(context.Context) (setupTokenIssued, error) {
+		return setupTokenIssued{token: installToken, expires: time.Now().Add(TokenLifetime)}, nil
 	}
 	return h
 }
@@ -1168,5 +1180,81 @@ func TestInstallationWritesNothingOutsideTheRootItWasGiven(t *testing.T) {
 		if !allowed[path] {
 			t.Errorf("%s was written on this host and is not a path hostpaths names", path)
 		}
+	}
+}
+
+// Installation is the only thing that knows this host is reached over plain
+// HTTP, and the unit is how it tells the service. Without the flag the server
+// sets a Secure session cookie on an insecure origin, the browser drops it, and
+// the operator meets a sign-in screen that succeeds and then asks again -- with
+// nothing in any log to say why.
+func TestTheUnitOfAPlainHTTPInstallationTellsTheServiceSo(t *testing.T) {
+	t.Parallel()
+
+	h := newInstallHost(t)
+	h.inst.cfg.plainHTTP = true
+
+	if err := h.install(); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	if unit := h.read(hostpaths.Unit); !strings.Contains(unit, "--plain-http") {
+		t.Errorf("the unit does not tell the service that this host is plain HTTP, so "+
+			"the session cookie would be dropped by the browser:\n%s", unit)
+	}
+}
+
+// --plain-http is not the only way a host ends up on plain HTTP: answering "no"
+// to the self-signed certificate question is the other, and it leaves the flag
+// false. The unit has to follow the site that was resolved rather than the flag
+// that was passed, so the assertion is on the unit and the answer is driven
+// through install() -- setting cfg.plainHTTP by hand, which is what the two
+// tests above do, walks straight past the branch that gets this wrong.
+//
+// What it got wrong: the service set a Secure session cookie on an http://
+// origin, the browser dropped it, and sign-in answered 200 and then 401 with
+// nothing in any log to say why.
+func TestDecliningACertificateYieldsAUnitThatSaysPlainHTTP(t *testing.T) {
+	t.Parallel()
+
+	h := newInstallHost(t)
+	h.answer("no\n")
+
+	if err := h.install(); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	// The site the operator's answer produced, read back from what installation
+	// went and checked through the proxy rather than from what it intended.
+	if h.proved.how != proxy.AtIPPlain {
+		t.Fatalf("the resolved site is %v at %s, want plain HTTP: the answer was declined",
+			h.proved.how, h.proved.url)
+	}
+	if !strings.HasPrefix(h.proved.url, "http://") {
+		t.Fatalf("site url = %s, want an http:// one", h.proved.url)
+	}
+
+	if unit := h.read(hostpaths.Unit); !strings.Contains(unit, "--plain-http") {
+		t.Errorf("the operator declined a certificate, so this host is reached over %s, and the "+
+			"unit says nothing about it -- the session cookie would be Secure and the browser "+
+			"would drop it:\n%s", h.proved.url, unit)
+	}
+}
+
+// And an installation that has TLS must not carry it: a Secure flag dropped
+// from the cookie is a session token any network between the browser and nginx
+// can read.
+func TestTheUnitOfAnInstallationWithTLSSaysNothingAboutPlainHTTP(t *testing.T) {
+	t.Parallel()
+
+	h := newInstallHost(t)
+	h.inst.cfg.selfSigned = true
+
+	if err := h.install(); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	if unit := h.read(hostpaths.Unit); strings.Contains(unit, "--plain-http") {
+		t.Errorf("the unit claims plain HTTP on a host that has a certificate:\n%s", unit)
 	}
 }

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -93,6 +94,47 @@ func (s *Store) Record(ctx context.Context, entry Audited) error {
 	}
 	if written == 0 {
 		return fmt.Errorf("recording that the operator %d did %q: %w", entry.OperatorID, entry.Action, ErrNotFound)
+	}
+	return nil
+}
+
+// RecordUnauthenticated writes an audit entry for an act nobody was signed in
+// for. Redeeming the Setup Token is the only such act dokkup has, and this call
+// exists so that it stays that way: it is a separate name rather than a nil
+// operator id accepted by [Store.Record], because an unattributed entry has to
+// be a decision somebody wrote down and not what happens when a caller forgets
+// to fill a field in.
+//
+// The entry carries a NULL operator_id and an empty operator_email, which is
+// the same shape a removed operator's entries take -- the trail already reads
+// "nobody we can name" that way, so nothing that displays it has to learn a
+// second convention. Whatever the attempt claimed goes in [Audited.Target]: the
+// email address somebody tried to become the Owner with is the only useful
+// thing about a rejected redemption, and it is a claim, not an identity, which
+// is exactly why it does not go in the column that names an operator.
+//
+// The token, its hash, the password and its hash are never written here. See
+// [AuditEntry.ConfigKey] for the same argument about configuration values: the
+// trail is kept forever and read by everyone who can read the database.
+func (s *Store) RecordUnauthenticated(ctx context.Context, entry Audited) error {
+	if entry.Action == "" {
+		return errors.New("recording an unauthenticated audit entry: it names no action")
+	}
+	// An operator id here means the caller had somebody in mind, and this is
+	// the call that cannot record them. Silently dropping it would attribute an
+	// action to nobody when the trail could have said who; [Store.Record] is
+	// the call that wants an operator.
+	if entry.OperatorID != 0 {
+		return fmt.Errorf("recording an unauthenticated audit entry for %q: it names the operator %d",
+			entry.Action, entry.OperatorID)
+	}
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO audit_entries (operator_id, operator_email, action, target, config_key, recorded_at)
+		 VALUES (NULL, '', ?, ?, ?, ?)`,
+		entry.Action, entry.Target, entry.ConfigKey, millis(now()))
+	if err != nil {
+		return fmt.Errorf("recording that somebody did %q: %w", entry.Action, err)
 	}
 	return nil
 }
