@@ -31,6 +31,15 @@ type UnitConfig struct {
 	// Domain is the name dokkup answers to, when it has one.
 	Domain string
 
+	// PlainHTTP says this host is reached over plain HTTP, which the service
+	// has to be told rather than left to guess: nginx terminates in front of
+	// it, so the server sees an ordinary HTTP request either way and cannot
+	// tell the two apart. What turns on it is the Secure flag on the session
+	// cookie -- a browser drops a Secure cookie on an insecure origin, so
+	// getting this wrong makes signing in fail silently, on the operator's
+	// machine, with nothing in any log to say why.
+	PlainHTTP bool
+
 	// ManageCertificate asks the service to obtain and renew the certificate
 	// for Domain over ACME.
 	//
@@ -108,6 +117,9 @@ func UnitFile(cfg UnitConfig) string {
 	}
 	if cfg.ACMEDirectory != "" {
 		fmt.Fprintf(&extra, " --acme-directory %s", cfg.ACMEDirectory)
+	}
+	if cfg.PlainHTTP {
+		extra.WriteString(" --plain-http")
 	}
 
 	return fmt.Sprintf(`[Unit]

@@ -24,6 +24,7 @@ import (
 	"github.com/eduardotorresdev/dokkup/internal/proxy"
 	"github.com/eduardotorresdev/dokkup/internal/server"
 	"github.com/eduardotorresdev/dokkup/internal/service"
+	"github.com/eduardotorresdev/dokkup/internal/store"
 )
 
 const (
@@ -160,6 +161,9 @@ func runInstall(env Env, args []string) error {
 			return probeHealth(ctx, probe, url)
 		}, inst.version, proxyConfirmTimeout, proxyConfirmInterval)
 	}
+	inst.issueToken = func(ctx context.Context) (setupTokenIssued, error) {
+		return setupTokenIssue(ctx, env, setupTokenThisHost(), inst.path(hostpaths.DB), TokenLifetime)
+	}
 
 	return inst.install(context.Background())
 }
@@ -239,6 +243,19 @@ type installer struct {
 	// installation says it can, through nginx rather than on the loopback
 	// address the service binds.
 	confirmProxy func(ctx context.Context, s site) error
+
+	// issueToken mints the token the operator creates the Owner with. A field
+	// for the reason health and confirmProxy are: it opens a database and, as
+	// root, changes who owns the file, so a report that has to be exercised
+	// both ways cannot reach it directly.
+	issueToken func(ctx context.Context) (setupTokenIssued, error)
+
+	// issued is what that produced and issueErr is why it produced nothing.
+	// They are held rather than printed where they happen because the token
+	// belongs at the end of the report, under the address it is spent at, and
+	// not buried above the certificate this run was still waiting for.
+	issued   setupTokenIssued
+	issueErr error
 
 	// resolve is the DNS lookup the domain check uses, and local reports the
 	// addresses this host has. Both are fields because the check has an
@@ -362,6 +379,21 @@ func (i *installer) change(ctx context.Context, s site) error {
 	if s.manageCert {
 		i.awaitCertificate(ctx)
 	}
+
+	// Last, and deliberately after the certificate wait: the token carries a
+	// deadline the operator is shown, and minting it before a wait that may
+	// take ninety seconds would spend a twentieth of its life on something the
+	// operator cannot act during. It also needs the service up, because the
+	// service is what the token is redeemed against.
+	//
+	// The error is kept rather than returned, for the reason awaitCertificate
+	// returns none: dokkup is installed and answering by this point, and
+	// tearing that down over a token which `dokkup setup-token` can reissue in
+	// one command would destroy the working half to punish the failed half.
+	i.issued, i.issueErr = i.issueToken(ctx)
+
+	// After the issue, because the issue is what may have changed it.
+	i.reportDataDir()
 	return nil
 }
 
@@ -846,8 +878,23 @@ func (i *installer) ensureDataDir(ctx context.Context, account host.Account) err
 		}
 	}
 
-	printf(i.env.Stdout, "%s is %#o, owned by %s.\n", hostpaths.DataDir, dataDirMode, hostpaths.User)
 	return nil
+}
+
+// reportDataDir says what the state directory actually is.
+//
+// It is read back off the disk and printed at the end of the run rather than
+// where the directory is created, because creating it is no longer the last
+// thing that decides its mode: issuing the token opens the database, and
+// [store.Open] tightens the directory it lives in on every open. Printed where
+// EnsureDir returns, this line was true for the rest of one function and a lie
+// by the time the operator read it.
+func (i *installer) reportDataDir() {
+	mode := fs.FileMode(dataDirMode)
+	if info, err := os.Stat(i.path(hostpaths.DataDir)); err == nil {
+		mode = info.Mode().Perm()
+	}
+	printf(i.env.Stdout, "%s is %#o, owned by %s.\n", hostpaths.DataDir, mode, hostpaths.User)
 }
 
 // ensureSudoers writes the rule and then proves it, because a rule with the
@@ -1062,6 +1109,18 @@ func (i *installer) installUnit(ctx context.Context, s site) error {
 		ManageCertificate: s.manageCert,
 		ACMEEmail:         i.cfg.acmeEmail,
 		ACMEDirectory:     i.cfg.acmeDirectory,
+		// Read off the resolved site and not off --plain-http, and not off the
+		// mode either. The mode is the wrong source because an IP-Mode host
+		// with a self-signed certificate is HTTPS too; the flag is the wrong
+		// source because it is only one of the two ways a host ends up on plain
+		// HTTP -- the other is the operator answering "no" to
+		// [selfSignedQuestion], which leaves --plain-http false and the site
+		// [proxy.AtIPPlain] all the same. Reading the flag there wrote a unit
+		// with no --plain-http, so the service set a Secure session cookie on an
+		// http:// origin, the browser dropped it, and sign-in answered 200 and
+		// then 401 with nothing in any log. [site.how] is the authority on how
+		// this host is reached, which is precisely the question being asked.
+		PlainHTTP: s.how == proxy.AtIPPlain,
 	})
 
 	restore, err := i.writeOwnedFile(i.path(hostpaths.Unit), []byte(unit), readableMode, "unit")
@@ -1206,9 +1265,31 @@ func (i *installer) report(s site) {
 		printf(i.env.Stdout, "  every screen.\n\n")
 	}
 
-	printf(i.env.Stdout, "  Creating the owner account needs a single-use token, which this\n")
-	printf(i.env.Stdout, "  version does not issue yet: when it does, the installer prints one\n")
-	printf(i.env.Stdout, "  here and 'dokkup setup-token' reissues it while no owner exists.\n\n")
+	switch {
+	// Not a failure, and the commonest ending this report has: every
+	// installation after the first one has an owner, and reinstalling is a
+	// supported thing to do -- the paragraph above tells an operator with no
+	// --acme-email to do exactly that. Reported as an error it would be a
+	// working host described as broken, followed by an instruction to run a
+	// command that refuses with the same sentence and exits 1.
+	case errors.Is(i.issueErr, store.ErrOwnerExists):
+		printf(i.env.Stdout, "  This installation already has its owner, so no token was issued and\n")
+		printf(i.env.Stdout, "  none is needed. Sign in at the address above.\n\n")
+
+	case i.issueErr != nil:
+		// Said as two facts in this order, because the operator's first
+		// question on seeing an error at the end of an installation is whether
+		// the installation happened. It did.
+		printf(i.env.Stdout, "  dokkup is installed and answering, and nothing here needs undoing. What\n")
+		printf(i.env.Stdout, "  failed is the token that creates the owner account:\n\n")
+		printf(i.env.Stdout, "    %v\n\n", i.issueErr)
+		printf(i.env.Stdout, "  Run 'dokkup setup-token' on this host to get one. Read the reason above\n")
+		printf(i.env.Stdout, "  first: it is about %s, which is where dokkup keeps its own state.\n\n",
+			hostpaths.DB)
+
+	default:
+		setupTokenPrint(i.env.Stdout, i.issued, s.url)
+	}
 }
 
 // writeOwnedFile writes one of dokkup's files and returns how to put back
@@ -1497,10 +1578,11 @@ func printInstallPlan(env Env, cfg installConfig) {
 		printf(env.Stdout, "  later with 'dokkup publish <domain>'.\n\n")
 	}
 
-	printf(env.Stdout, "  Print the address to reach dokkup at. Creating the owner account needs\n")
-	printf(env.Stdout, "  a single-use token, which this version does not issue yet: when it does,\n")
-	printf(env.Stdout, "  the installer prints one here and 'dokkup setup-token' reissues it while\n")
-	printf(env.Stdout, "  no owner exists.\n\n")
+	printf(env.Stdout, "  Print the address to reach dokkup at, and a single-use token that expires\n")
+	printf(env.Stdout, "  in %s, which is what creates the owner account. It will be on your screen\n",
+		TokenLifetime)
+	printf(env.Stdout, "  and in this terminal's scrollback; 'dokkup setup-token' issues another\n")
+	printf(env.Stdout, "  while no owner exists.\n\n")
 }
 
 // certificateAuthority names who will be issuing, for a plan that has to be
@@ -1527,17 +1609,4 @@ func runPublish(env Env, args []string) error {
 	printf(env.Stdout, "there with a certificate, and leave IP mode.\n\n")
 
 	return fmt.Errorf("%w: publishing is not built yet", ErrNotImplemented)
-}
-
-func runSetupToken(env Env, args []string) error {
-	fs := newFlagSet(env, "setup-token")
-	if err := parseFlags(fs, args); err != nil {
-		return err
-	}
-
-	printf(env.Stdout, "dokkup setup-token issues a single-use token for creating the owner.\n")
-	printf(env.Stdout, "It refuses once an owner exists: without that condition it would be an\n")
-	printf(env.Stdout, "unauthenticated route to taking over the account.\n\n")
-
-	return fmt.Errorf("%w: token issuance is not built yet", ErrNotImplemented)
 }

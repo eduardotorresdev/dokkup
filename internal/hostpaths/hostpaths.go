@@ -52,6 +52,22 @@ const (
 	// certificate. Removal asks before deleting it.
 	DataDir = "/var/lib/dokkup"
 
+	// DB is the single file holding dokkup's Own State: operators, sessions,
+	// the audit trail, and nothing about an App. See
+	// docs/adr/0002-dokku-is-the-source-of-truth.md.
+	//
+	// It is not in [Owned] and needs no entry there: it sits inside [DataDir],
+	// which removal already visits, and naming it twice would let the two
+	// disagree. It is named here because [internal/store] must not carry a
+	// filesystem path of its own -- one list of what dokkup puts on a host.
+	//
+	// Write-ahead logging puts two more files beside it, "-wal" and "-shm",
+	// which SQLite creates while the database is open and removes when the last
+	// connection closes. They are not named as constants because nothing may
+	// address them directly; they belong to SQLite and are deleted with
+	// [DataDir] in the case where the database was left behind open.
+	DB = DataDir + "/dokkup.db"
+
 	// TLSDir holds the certificate dokkup serves, whether self-signed or
 	// supplied. The paths never change, so a future renewal replaces file
 	// contents rather than rewriting the vhost.

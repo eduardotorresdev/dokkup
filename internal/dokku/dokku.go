@@ -30,6 +30,31 @@ type Client interface {
 
 	// AppReport returns the machine-readable report for one app.
 	AppReport(ctx context.Context, app string) (map[string]string, error)
+
+	// ProcessTypes reports each of an app's process types and how many
+	// containers of it Dokku is running.
+	ProcessTypes(ctx context.Context, app string) (map[string]int, error)
+
+	// Domains lists the domains Dokku serves an app at.
+	Domains(ctx context.Context, app string) ([]string, error)
+
+	// Logs streams an app's log lines to fn until the stream ends, the context
+	// is cancelled, or fn returns an error.
+	Logs(ctx context.Context, app string, opts LogOptions, fn func(line string) error) error
+}
+
+// LogOptions narrows a log stream.
+type LogOptions struct {
+	// ProcessType narrows the stream to one process type. Empty means all.
+	ProcessType string
+
+	// Tail is how many past lines to begin with. Zero means Dokku's default,
+	// and so does anything below zero: there is no reading of "minus five
+	// lines" worth inventing, and Dokku is never asked for one.
+	Tail int
+
+	// Follow keeps the stream open, delivering lines as the app writes them.
+	Follow bool
 }
 
 // ErrAppNotFound is returned when an operation names an app Dokku does not have.
@@ -56,4 +81,21 @@ func ValidateAppName(name string) error {
 	default:
 		return nil
 	}
+}
+
+// processType matches a name a Procfile can give a process: letters, digits,
+// dashes and underscores, starting with a letter or a digit.
+//
+// A process type reaches Dokku as the value of a flag, so the reasoning behind
+// [ValidateAppName] applies to it unchanged: no shell can read it as syntax,
+// but a value beginning with a dash would be read as another flag by the Dokku
+// binary itself.
+var processType = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+
+// validateProcessType reports whether name is usable as a Dokku process type.
+func validateProcessType(name string) error {
+	if !processType.MatchString(name) {
+		return fmt.Errorf("process type %q must contain only letters, digits, dashes and underscores, and start with a letter or digit", name)
+	}
+	return nil
 }

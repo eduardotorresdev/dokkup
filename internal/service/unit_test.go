@@ -221,3 +221,34 @@ func TestAHandEditedUnitIsStillRead(t *testing.T) {
 		})
 	}
 }
+
+// The service cannot work out for itself that it is reached over plain HTTP:
+// nginx terminates in front of it, so what arrives is an ordinary HTTP request
+// either way. If the unit does not say so, the server sets a Secure session
+// cookie, the browser drops it, and every sign-in on that host fails silently.
+func TestTheUnitTellsTheServiceWhenTheHostIsReachedOverPlainHTTP(t *testing.T) {
+	t.Parallel()
+
+	unit := service.UnitFile(service.UnitConfig{Mode: "ip", PlainHTTP: true})
+
+	if !strings.Contains(unit, "--plain-http") {
+		t.Errorf("the unit does not carry --plain-http, so the session cookie would be dropped:\n%s", unit)
+	}
+}
+
+// The flag is absent unless it was asked for, in both directions: an HTTPS host
+// whose unit carried it would hand out a cookie any network between the browser
+// and nginx could read.
+func TestTheUnitOfAnHTTPSInstallationSaysNothingAboutPlainHTTP(t *testing.T) {
+	t.Parallel()
+
+	for name, cfg := range map[string]service.UnitConfig{
+		"the defaults":         {},
+		"a published host":     {Mode: "published", Domain: "dokkup.example.com"},
+		"an address, over TLS": {Mode: "ip"},
+	} {
+		if unit := service.UnitFile(cfg); strings.Contains(unit, "--plain-http") {
+			t.Errorf("%s: the unit says --plain-http without being asked to:\n%s", name, unit)
+		}
+	}
+}
